@@ -1,54 +1,529 @@
 import os
+import random
+import sqlite3
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
+import re
+import sys
+from datetime import datetime
 
 # Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
 
+# Константы для ограничений
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_LINKS = 1000  # Максимальное количество ссылок в файле
+ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пустое расширение
+
+# Состояния разговора
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS = range(5)
+
+# Код администратора
+ADMIN_CODE = 'YH8jRnO1Np8wVUZobJfwPIv'
+
+# Определяем путь к директории бота
+BOT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
+TEMP_DIR = os.path.join(BOT_DIR, 'temp')
+LOG_DIR = os.path.join(BOT_DIR, 'logs')
+
+# Создаем директории если их нет
+for directory in [TEMP_DIR, LOG_DIR]:
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+def log_error(user_id, error_message):
+    """Логирование ошибок в файл"""
+    log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(log_file, 'a', encoding='utf-8') as f:
+        f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
+
+# Создание базы данных
+def setup_database():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Создаем таблицу users если её нет
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            is_verified BOOLEAN DEFAULT FALSE,
+            is_admin BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Создаем таблицу для статуса бота если её нет
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS bot_status (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            status TEXT DEFAULT 'enabled'
+        )
+    ''')
+    
+    # Проверяем, есть ли запись о статусе бота
+    c.execute('SELECT COUNT(*) FROM bot_status')
+    if c.fetchone()[0] == 0:
+        c.execute('INSERT INTO bot_status (id, status) VALUES (1, "enabled")')
+    
+    conn.commit()
+    conn.close()
+
+def is_user_verified(user_id):
+    """Проверка верификации пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT is_verified FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else False
+
+def is_admin(user_id):
+    """Проверка прав администратора"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else False
+
+def verify_user(user_id, username):
+    """Верификация пользователя в базе данных"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Проверяем, существует ли пользователь и является ли он админом
+    c.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    is_admin_status = result[0] if result else False
+    
+    # Обновляем или добавляем пользователя, сохраняя статус админа
+    c.execute('''
+        INSERT OR REPLACE INTO users (user_id, username, is_verified, is_admin)
+        VALUES (?, ?, TRUE, ?)
+    ''', (user_id, username, is_admin_status))
+    
+    conn.commit()
+    conn.close()
+
+def is_bot_enabled():
+    """Проверка, включен ли бот"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT status FROM bot_status WHERE id = 1')
+    result = c.fetchone()
+    conn.close()
+    return result[0] == 'enabled' if result else True
+
+def generate_captcha():
+    """Генерация простой математической капчи"""
+    num1 = random.randint(1, 10)
+    num2 = random.randint(1, 10)
+    operation = random.choice(['+', '-', '*'])
+    if operation == '+':
+        answer = num1 + num2
+    elif operation == '-':
+        answer = num1 - num2
+    else:
+        answer = num1 * num2
+    question = f"{num1} {operation} {num2} = ?"
+    return question, str(answer)
+
+def get_menu_keyboard(user_id):
+    """Создание клавиатуры с меню в зависимости от прав пользователя"""
+    keyboard = [
+        ['📤 Обработать файл'],
+        ['ℹ️ Помощь', '📊 Статистика']
+    ]
+    
+    # Добавляем кнопку настроек только для администраторов
+    if is_admin(user_id):
+        keyboard.append(['⚙️ Настройки'])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return ConversationHandler.END
+    
+    user_id = update.effective_user.id
+    
+    # Проверяем команду на код администратора
+    message_text = update.message.text.strip()
+    if message_text.startswith('/start admin'):
+        admin_code = message_text.split('admin')[-1].strip()
+        if admin_code == ADMIN_CODE:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                INSERT OR REPLACE INTO users (user_id, username, is_verified, is_admin)
+                VALUES (?, ?, TRUE, TRUE)
+            ''', (user_id, update.effective_user.username))
+            conn.commit()
+            conn.close()
+            await update.message.reply_text("Вы успешно стали администратором!")
+            await show_menu(update, context)
+            return MENU
+    
+    # Проверяем, верифицирован ли пользователь
+    if is_user_verified(user_id):
+        await show_menu(update, context)
+        return MENU
+    
+    # Генерируем капчу
+    captcha_question, captcha_answer = generate_captcha()
+    context.user_data['captcha_answer'] = captcha_answer
+    
     await update.message.reply_text(
-        'Привет! Отправь мне файл со ссылками, и я верну тебе последние 10 ссылок в формате HTML.'
+        f"Добро пожаловать! Для начала работы, пожалуйста, решите простой пример:\n\n{captcha_question}"
     )
+    return CAPTCHA
+
+async def check_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return ConversationHandler.END
+    
+    user_answer = update.message.text.strip()
+    correct_answer = context.user_data.get('captcha_answer')
+    
+    if user_answer == correct_answer:
+        # Верифицируем пользователя
+        verify_user(update.effective_user.id, update.effective_user.username)
+        await show_menu(update, context)
+        return MENU
+    else:
+        # Генерируем новую капчу
+        captcha_question, captcha_answer = generate_captcha()
+        context.user_data['captcha_answer'] = captcha_answer
+        await update.message.reply_text(
+            f"Неверно! Попробуйте еще раз:\n\n{captcha_question}"
+        )
+        return CAPTCHA
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Выберите действие:",
+        reply_markup=get_menu_keyboard(update.effective_user.id)
+    )
+    return MENU
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return MENU
+    
+    text = update.message.text
+    
+    if text == '📤 Обработать файл':
+        await update.message.reply_text(
+            'Отправьте мне файл со ссылками (txt, csv или md), '
+            'и я верну вам последние 10 ссылок в формате HTML.\n'
+            'Ограничения:\n'
+            '- Максимальный размер файла: 10 MB\n'
+            '- Максимальное количество ссылок: 1000\n'
+            '- Поддерживаемые форматы: .txt, .csv, .md'
+        )
+    elif text == 'ℹ️ Помощь':
+        await update.message.reply_text(
+            "Этот бот помогает обрабатывать файлы со ссылками.\n\n"
+            "Как использовать:\n"
+            "1. Нажмите '📤 Обработать файл'\n"
+            "2. Отправьте файл со ссылками\n"
+            "3. Получите обработанный файл с последними 10 ссылками\n\n"
+            "Поддерживаемые форматы: .txt, .csv, .md"
+        )
+    elif text == '📊 Статистика':
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM users WHERE is_verified = TRUE')
+        verified_users = c.fetchone()[0]
+        conn.close()
+        
+        await update.message.reply_text(
+            f"📊 Статистика бота:\n"
+            f"Верифицированных пользователей: {verified_users}"
+        )
+    elif text == '⚙️ Настройки' and is_admin(update.effective_user.id):
+        return await settings_command(update, context)
+    
+    return MENU
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return MENU
+    
+    keyboard = []
+    
+    # Добавляем команды администратора
+    if is_admin(update.effective_user.id):
+        keyboard.extend([
+            [KeyboardButton(text="Технические команды")],
+            [KeyboardButton(text="Другое")]
+        ])
+    
+    keyboard.append([KeyboardButton(text="Назад")])
+    
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Настройки:", reply_markup=markup)
+    return SETTINGS
+
+async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return MENU
+    
+    text = update.message.text
+    
+    if text == "Назад":
+        await show_menu(update, context)
+        return MENU
+    elif text == "Технические команды" and is_admin(update.effective_user.id):
+        markup = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Включить бота")],
+                [KeyboardButton(text="Выключить бота")],
+                [KeyboardButton(text="Перезапустить бота")],
+                [KeyboardButton(text="Назад")]
+            ],
+            resize_keyboard=True
+        )
+        await update.message.reply_text("Технические команды:", reply_markup=markup)
+        return TECH_COMMANDS
+    elif text == "Другое" and is_admin(update.effective_user.id):
+        markup = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Написать всем пользователям")],
+                [KeyboardButton(text="Назад")]
+            ],
+            resize_keyboard=True
+        )
+        await update.message.reply_text("Другое:", reply_markup=markup)
+        return OTHER_COMMANDS
+    else:
+        await update.message.reply_text("Пожалуйста, выберите действие из меню.")
+        return SETTINGS
+
+async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        await show_menu(update, context)
+        return MENU
+    
+    text = update.message.text
+    
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+    elif text == "Включить бота":
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE bot_status SET status='enabled' WHERE id=1")
+        conn.commit()
+        conn.close()
+        await update.message.reply_text("Бот включен.")
+    elif text == "Выключить бота":
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("UPDATE bot_status SET status='disabled' WHERE id=1")
+        conn.commit()
+        conn.close()
+        await update.message.reply_text("Бот выключен. Теперь он на техническом обслуживании.")
+    elif text == "Перезапустить бота":
+        await update.message.reply_text("Перезапуск бота...")
+        os.execv(sys.executable, ['python'] + sys.argv)
+    
+    return TECH_COMMANDS
+
+async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("У вас нет доступа к этой функции.")
+        await show_menu(update, context)
+        return MENU
+    
+    text = update.message.text
+    
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+    elif text == "Написать всем пользователям":
+        await update.message.reply_text("Введите сообщение для рассылки:")
+        return OTHER_COMMANDS
+    else:
+        # Отправляем сообщение всем пользователям
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM users WHERE is_verified = TRUE')
+        users = c.fetchall()
+        conn.close()
+        
+        success_count = 0
+        for user_id in users:
+            try:
+                await context.bot.send_message(chat_id=user_id[0], text=text)
+                success_count += 1
+            except Exception as e:
+                print(f"Ошибка отправки сообщения пользователю {user_id[0]}: {e}")
+        
+        await update.message.reply_text(f"Сообщение отправлено {success_count} пользователям.")
+        await settings_command(update, context)
+        return SETTINGS
 
 async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.document:
-        await update.message.reply_text("Пожалуйста, отправьте текстовый файл.")
-        return
+    # Проверяем верификацию пользователя и статус бота
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return MENU
+    
+    if not is_user_verified(update.effective_user.id):
+        await update.message.reply_text(
+            "Пожалуйста, пройдите верификацию с помощью команды /start"
+        )
+        return MENU
 
     try:
-        file = await context.bot.get_file(update.message.document.file_id)
-        downloaded_file = await file.download_as_bytearray()
-        content = downloaded_file.decode('utf-8')
+        # Проверка наличия документа
+        if not update.message.document:
+            await update.message.reply_text("Пожалуйста, отправьте текстовый файл.")
+            return MENU
+
+        document = update.message.document
         
-        # Получаем последние 10 ссылок
-        links = [line.strip() for line in content.splitlines() if line.strip()]
-        last_ten_links = links[-10:]
-        
-        # Создаем простой текстовый файл с расширением .html
-        output_filename = 'last_ten_links.html'
-        with open(output_filename, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(last_ten_links))
-        
-        # Отправляем файл
-        with open(output_filename, 'rb') as f:
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=f,
-                filename=output_filename
+        # Проверка расширения файла
+        file_name = document.file_name.lower()
+        if not any(file_name.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+            await update.message.reply_text(
+                f"Неподдерживаемый формат файла. Разрешены только: {', '.join(ALLOWED_EXTENSIONS)}"
             )
+            return MENU
+
+        # Проверка размера файла
+        if document.file_size > MAX_FILE_SIZE:
+            await update.message.reply_text(
+                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024 * 1024)} MB"
+            )
+            return MENU
+
+        # Скачиваем файл
+        file = await context.bot.get_file(document.file_id)
+        downloaded_file = await file.download_as_bytearray()
         
-        # Удаляем временный файл
-        os.remove(output_filename)
+        try:
+            content = downloaded_file.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                content = downloaded_file.decode('windows-1251')
+            except UnicodeDecodeError:
+                await update.message.reply_text(
+                    "Ошибка при чтении файла. Убедитесь, что файл в кодировке UTF-8 или Windows-1251."
+                )
+                return MENU
+
+        # Получаем строки из файла
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        
+        # Проверка количества строк
+        if len(lines) > MAX_LINKS:
+            await update.message.reply_text(
+                f"Слишком много строк в файле. Максимально допустимо: {MAX_LINKS}"
+            )
+            return MENU
+
+        if not lines:
+            await update.message.reply_text(
+                "Файл пуст или не содержит текстовых строк."
+            )
+            return MENU
+
+        # Берем последние 10 строк
+        last_ten_lines = lines[-10:]
+        
+        # Создаем файл во временной директории
+        output_filename = os.path.join(TEMP_DIR, f'lines_{update.effective_user.id}.html')
+        try:
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(last_ten_lines))
+            
+            # Отправляем файл
+            with open(output_filename, 'rb') as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename='last_ten_lines.html',
+                    caption=f"Найдено {len(lines)} строк. Показаны последние 10."
+                )
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
         
     except Exception as e:
-        await update.message.reply_text(f"Произошла ошибка при обработке файла: {str(e)}")
+        error_message = f"Произошла ошибка при обработке файла: {str(e)}"
+        log_error(update.effective_user.id, error_message)
+        print(f"Error for user {update.effective_user.id}: {error_message}")
+        await update.message.reply_text(
+            "Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова."
+        )
+    
+    return MENU
 
 def main():
+    # Создаем и настраиваем приложение
     application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.Document.ALL, process_file))
+    
+    # Создаем базу данных
+    setup_database()
+    
+    async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Восстановление меню для верифицированных пользователей"""
+        if is_user_verified(update.effective_user.id):
+            if not is_bot_enabled() and not is_admin(update.effective_user.id):
+                await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+                return ConversationHandler.END
+            await show_menu(update, context)
+            return MENU
+        else:
+            await update.message.reply_text("Пожалуйста, используйте команду /start для начала работы.")
+            return ConversationHandler.END
+    
+    # Создаем обработчик разговора
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler('start', start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
+            MessageHandler(filters.Document.ALL, restore_menu)
+        ],
+        states={
+            CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
+            MENU: [
+                MessageHandler(filters.Document.ALL, process_file),
+                MessageHandler(filters.Regex('^(📤 Обработать файл|ℹ️ Помощь|📊 Статистика|⚙️ Настройки)$'), handle_menu)
+            ],
+            SETTINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_settings)],
+            TECH_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_tech_commands)],
+            OTHER_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_other_commands)]
+        },
+        fallbacks=[
+            CommandHandler('start', start),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
+            MessageHandler(filters.Document.ALL, restore_menu)
+        ]
+    )
+    
+    # Добавляем обработчик разговора
+    application.add_handler(conv_handler)
+    
+    # Запускаем бота
+    print(f"Бот запущен и готов к работе!")
+    print(f"База данных: {DB_PATH}")
+    print(f"Временные файлы: {TEMP_DIR}")
+    print(f"Логи: {LOG_DIR}")
     application.run_polling()
 
 if __name__ == '__main__':
