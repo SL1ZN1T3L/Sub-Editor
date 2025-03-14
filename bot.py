@@ -4,7 +4,6 @@ import sqlite3
 from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
-import re
 import sys
 from datetime import datetime
 
