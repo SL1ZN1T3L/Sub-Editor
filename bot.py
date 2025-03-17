@@ -162,8 +162,9 @@ def get_menu_keyboard(user_id):
     """Создание клавиатуры с меню"""
     keyboard = [
         ['📤 Обработать файл'],
+        ['🔄 Объединить подписки'],
         ['ℹ️ Помощь', '📊 Статистика'],
-        ['⚙️ Настройки']  # Теперь доступно всем
+        ['⚙️ Настройки']
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -252,6 +253,17 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '- Поддерживаемые форматы: .txt, .csv, .md'
         )
         return PROCESS_FILE
+    elif text == '🔄 Объединить подписки':
+        keyboard = [
+            [KeyboardButton("Объединить")],
+            [KeyboardButton("Назад")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(
+            "Отправьте ссылки на подписки для объединения:",
+            reply_markup=reply_markup
+        )
+        return MERGE_FILES
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
@@ -331,7 +343,6 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard=[
                 [KeyboardButton(text="Написать всем пользователям")],
                 [KeyboardButton(text="Управление пользователями")],
-                [KeyboardButton(text="Объединить подписки")],
                 [KeyboardButton(text="Настройка количества строк")],
                 [KeyboardButton(text="Назад")]
             ],
@@ -763,8 +774,8 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
 
             # Очищаем данные
             context.user_data.clear()
-            await settings_command(update, context)
-            return SETTINGS
+            await show_menu(update, context)
+            return MENU
             
         except Exception as e:
             await update.message.reply_text(f"Ошибка при объединении подписок: {str(e)}")
@@ -772,8 +783,8 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
             
     elif update.message.text == "Назад":
         context.user_data.clear()
-        await settings_command(update, context)
-        return SETTINGS
+        await show_menu(update, context)
+        return MENU
     else:
         return await process_merge_files(update, context)
 
