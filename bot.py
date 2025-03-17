@@ -7,7 +7,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 import sys
 from datetime import datetime
 import base64
-from urllib.parse import urlparse, parse_qs, unquote
 import aiohttp
 
 # Загрузка переменных окружения
@@ -44,18 +43,11 @@ for directory in [TEMP_DIR, LOG_DIR]:
 def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
     try:
-        # Создаем директорию для логов, если её нет
-        if not os.path.exists(LOG_DIR):
-            os.makedirs(LOG_DIR)
-        
         log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Открываем файл в режиме добавления с указанием кодировки
         with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
-            f.flush()  # Принудительно записываем буфер
-            os.fsync(f.fileno())  # Убеждаемся, что данные записаны на диск
     except Exception as e:
         print(f"Ошибка при логировании: {str(e)}")
         print(f"[{timestamp}] User {user_id}: {error_message}")
@@ -99,13 +91,6 @@ def setup_database():
     c.execute('SELECT COUNT(*) FROM bot_status')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
-    
-    # Добавляем поле merged_count, если его нет
-    try:
-        c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
-    except sqlite3.OperationalError:
-        # Колонка уже существует
-        pass
     
     conn.commit()
     conn.close()
@@ -295,12 +280,24 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
-            "Этот бот помогает обрабатывать файлы со ссылками.\n\n"
-            "Как использовать:\n"
-            "1. Нажмите '📤 Обработать файл'\n"
+            "🤖 Этот бот помогает обрабатывать файлы и объединять подписки.\n\n"
+            "📤 Обработка файлов:\n"
+            f"1. Нажмите '📤 Обработать файл'\n"
             f"2. Отправьте файл со ссылками\n"
             f"3. Получите обработанный файл с последними {lines_to_keep} ссылками\n\n"
-            "Поддерживаемые форматы: .txt, .csv, .md"
+            "🔄 Объединение подписок:\n"
+            "1. Нажмите '🔄 Объединить подписки'\n"
+            "2. Отправьте ссылки на подписки по одной\n"
+            "3. Нажмите 'Объединить' когда закончите\n\n"
+            "⚙️ Настройки:\n"
+            "- Настройка количества строк для обработки файлов\n\n"
+            "📊 Статистика:\n"
+            "- Количество обработанных файлов\n"
+            "- Количество объединенных подписок\n"
+            "- Текущее количество строк\n\n"
+            "Поддерживаемые форматы файлов: .txt, .csv, .md\n"
+            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB\n"
+            f"Максимальное количество строк: {MAX_LINKS}"
         )
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
