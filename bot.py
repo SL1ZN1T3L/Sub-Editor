@@ -15,9 +15,10 @@ TOKEN = os.getenv('BOT_TOKEN')
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_LINKS = 1000  # Максимальное количество ссылок в файле
 ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пустое расширение
+DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолчанию
 
 # Состояния разговора
-CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS = range(5)
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE = range(9)
 
 # Код администратора
 ADMIN_CODE = 'YH8jRnO1Np8wVUZobJfwPIv'
@@ -60,14 +61,23 @@ def setup_database():
     c.execute('''
         CREATE TABLE IF NOT EXISTS bot_status (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            status TEXT DEFAULT 'enabled'
+            status TEXT DEFAULT 'enabled',
+            lines_to_keep INTEGER DEFAULT 10
+        )
+    ''')
+    
+    # Создаем таблицу для персональных настроек пользователей
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            lines_to_keep INTEGER DEFAULT 10
         )
     ''')
     
     # Проверяем, есть ли запись о статусе бота
     c.execute('SELECT COUNT(*) FROM bot_status')
     if c.fetchone()[0] == 0:
-        c.execute('INSERT INTO bot_status (id, status) VALUES (1, "enabled")')
+        c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
     
     conn.commit()
     conn.close()
@@ -133,16 +143,12 @@ def generate_captcha():
     return question, str(answer)
 
 def get_menu_keyboard(user_id):
-    """Создание клавиатуры с меню в зависимости от прав пользователя"""
+    """Создание клавиатуры с меню"""
     keyboard = [
         ['📤 Обработать файл'],
-        ['ℹ️ Помощь', '📊 Статистика']
+        ['ℹ️ Помощь', '📊 Статистика'],
+        ['⚙️ Настройки']  # Теперь доступно всем
     ]
-    
-    # Добавляем кнопку настроек только для администраторов
-    if is_admin(user_id):
-        keyboard.append(['⚙️ Настройки'])
-    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,21 +226,23 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     if text == '📤 Обработать файл':
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
-            'Отправьте мне файл со ссылками (txt, csv или md), '
-            'и я верну вам последние 10 ссылок в формате HTML.\n'
+            f'Отправьте мне файл со ссылками (txt, csv или md), '
+            f'и я верну вам последние {lines_to_keep} ссылок в формате HTML.\n'
             'Ограничения:\n'
             '- Максимальный размер файла: 10 MB\n'
             '- Максимальное количество ссылок: 1000\n'
             '- Поддерживаемые форматы: .txt, .csv, .md'
         )
     elif text == 'ℹ️ Помощь':
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
             "Этот бот помогает обрабатывать файлы со ссылками.\n\n"
             "Как использовать:\n"
             "1. Нажмите '📤 Обработать файл'\n"
-            "2. Отправьте файл со ссылками\n"
-            "3. Получите обработанный файл с последними 10 ссылками\n\n"
+            f"2. Отправьте файл со ссылками\n"
+            f"3. Получите обработанный файл с последними {lines_to_keep} ссылками\n\n"
             "Поддерживаемые форматы: .txt, .csv, .md"
         )
     elif text == '📊 Статистика':
@@ -248,7 +256,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Статистика бота:\n"
             f"Верифицированных пользователей: {verified_users}"
         )
-    elif text == '⚙️ Настройки' and is_admin(update.effective_user.id):
+    elif text == '⚙️ Настройки':
         return await settings_command(update, context)
     
     return MENU
@@ -260,7 +268,10 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = []
     
-    # Добавляем команды администратора
+    # Настройка строк доступна всем
+    keyboard.append([KeyboardButton(text="Настройка количества строк")])
+    
+    # Дополнительные команды только для администраторов
     if is_admin(update.effective_user.id):
         keyboard.extend([
             [KeyboardButton(text="Технические команды")],
@@ -274,15 +285,18 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SETTINGS
 
 async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_bot_enabled() and not is_admin(update.effective_user.id):
-        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
-        return MENU
-    
     text = update.message.text
     
     if text == "Назад":
         await show_menu(update, context)
         return MENU
+    elif text == "Настройка количества строк":
+        current_lines = get_user_lines_to_keep(update.effective_user.id)
+        await update.message.reply_text(
+            f"Текущее количество строк: {current_lines}\n"
+            f"Введите новое количество (от 1 до {MAX_LINKS}):"
+        )
+        return SET_LINES
     elif text == "Технические команды" and is_admin(update.effective_user.id):
         markup = ReplyKeyboardMarkup(
             keyboard=[
@@ -299,6 +313,9 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         markup = ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text="Написать всем пользователям")],
+                [KeyboardButton(text="Управление пользователями")],
+                [KeyboardButton(text="Объединить подписки")],
+                [KeyboardButton(text="Настройка количества строк")],
                 [KeyboardButton(text="Назад")]
             ],
             resize_keyboard=True
@@ -354,6 +371,25 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
     elif text == "Написать всем пользователям":
         await update.message.reply_text("Введите сообщение для рассылки:")
         return OTHER_COMMANDS
+    elif text == "Управление пользователями":
+        users = get_all_users()
+        if not users:
+            await update.message.reply_text("В базе данных нет пользователей.")
+            return OTHER_COMMANDS
+        
+        user_list = "Список пользователей:\n\n"
+        for user in users:
+            user_list += f"ID: {user[0]}\nИмя: {user[1] or 'Не указано'}\nВерифицирован: {'Да' if user[2] else 'Нет'}\nАдмин: {'Да' if user[3] else 'Нет'}\n\n"
+        
+        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:")
+        return USER_MANAGEMENT
+    elif text == "Объединить подписки":
+        await update.message.reply_text("Отправьте первый файл для объединения:")
+        return MERGE_FILES
+    elif text == "Настройка количества строк":
+        current_lines = get_user_lines_to_keep(update.effective_user.id)
+        await update.message.reply_text(f"Текущее количество строк: {current_lines}\nВведите новое количество (от 1 до {MAX_LINKS}):")
+        return SET_LINES
     else:
         # Отправляем сообщение всем пользователям
         conn = sqlite3.connect(DB_PATH)
@@ -373,6 +409,107 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"Сообщение отправлено {success_count} пользователям.")
         await settings_command(update, context)
         return SETTINGS
+
+async def process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = int(update.message.text)
+        if user_id == update.effective_user.id:
+            await update.message.reply_text("Вы не можете удалить себя.")
+            return USER_MANAGEMENT
+        
+        remove_user(user_id)
+        await update.message.reply_text(f"Пользователь с ID {user_id} удален.")
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, введите корректный ID пользователя.")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при удалении пользователя: {str(e)}")
+    
+    await settings_command(update, context)
+    return SETTINGS
+
+async def process_merge_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.document:
+        await update.message.reply_text("Пожалуйста, отправьте файл.")
+        return MERGE_FILES
+    
+    if 'first_file' not in context.user_data:
+        # Сохраняем первый файл
+        file = await context.bot.get_file(update.message.document.file_id)
+        context.user_data['first_file'] = await file.download_as_bytearray()
+        context.user_data['first_filename'] = os.path.splitext(update.message.document.file_name)[0]
+        await update.message.reply_text("Отправьте второй файл для объединения:")
+        return MERGE_FILES
+    else:
+        # Получаем второй файл и объединяем
+        file = await context.bot.get_file(update.message.document.file_id)
+        second_file = await file.download_as_bytearray()
+        second_filename = os.path.splitext(update.message.document.file_name)[0]
+        
+        try:
+            # Декодируем файлы
+            content1 = context.user_data['first_file'].decode('utf-8')
+            content2 = second_file.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                content1 = context.user_data['first_file'].decode('windows-1251')
+                content2 = second_file.decode('windows-1251')
+            except UnicodeDecodeError:
+                await update.message.reply_text("Ошибка при чтении файлов. Убедитесь, что файлы в кодировке UTF-8 или Windows-1251.")
+                return MERGE_FILES
+        
+        # Объединяем строки и удаляем дубликаты
+        lines1 = [line.strip() for line in content1.splitlines() if line.strip()]
+        lines2 = [line.strip() for line in content2.splitlines() if line.strip()]
+        merged_lines = list(set(lines1 + lines2))
+        
+        # Сортируем и берем последние N строк
+        merged_lines.sort()
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
+        last_lines = merged_lines[-lines_to_keep:]
+        
+        # Создаем имя выходного файла на основе оригинальных имен
+        output_filename = os.path.join(TEMP_DIR, f'merged_{context.user_data["first_filename"]}_{second_filename}_{update.effective_user.id}.txt')
+        try:
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(last_lines))
+            
+            with open(output_filename, 'rb') as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename=f'merged_{context.user_data["first_filename"]}_{second_filename}.txt',
+                    caption=f"Объединено {len(merged_lines)} строк. Показаны последние {lines_to_keep}."
+                )
+        finally:
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
+        
+        # Очищаем данные
+        context.user_data.clear()
+        await settings_command(update, context)
+        return SETTINGS
+
+async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        lines = int(update.message.text)
+        if 1 <= lines <= MAX_LINKS:
+            if is_admin(update.effective_user.id):
+                # Админ меняет глобальные настройки
+                set_lines_to_keep(lines)
+                await update.message.reply_text(f"Глобальное количество строк установлено: {lines}")
+            else:
+                # Обычный пользователь меняет свои настройки
+                set_user_lines_to_keep(update.effective_user.id, lines)
+                await update.message.reply_text(f"Ваше персональное количество строк установлено: {lines}")
+        else:
+            await update.message.reply_text(f"Введите число от 1 до {MAX_LINKS}")
+            return SET_LINES
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, введите корректное число.")
+        return SET_LINES
+    
+    await settings_command(update, context)
+    return SETTINGS
 
 async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Проверяем верификацию пользователя и статус бота
@@ -440,22 +577,27 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return MENU
 
-        # Берем последние 10 строк
-        last_ten_lines = lines[-10:]
+        # Получаем количество строк для конкретного пользователя
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         
-        # Создаем файл во временной директории
-        output_filename = os.path.join(TEMP_DIR, f'lines_{update.effective_user.id}.html')
+        # Берем последние N строк
+        last_lines = lines[-lines_to_keep:]
+        
+        # Создаем имя выходного файла на основе оригинального имени
+        original_name = os.path.splitext(document.file_name)[0]  # Получаем имя без расширения
+        output_filename = os.path.join(TEMP_DIR, f'{original_name}_{update.effective_user.id}.html')
+        
         try:
             with open(output_filename, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(last_ten_lines))
+                f.write('\n'.join(last_lines))
             
             # Отправляем файл
             with open(output_filename, 'rb') as f:
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=f,
-                    filename='last_ten_lines.html',
-                    caption=f"Найдено {len(lines)} строк. Показаны последние 10."
+                    filename=f'{original_name}.html',  # Используем оригинальное имя
+                    caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
                 )
         finally:
             # Удаляем временный файл
@@ -471,6 +613,58 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     return MENU
+
+def get_user_lines_to_keep(user_id):
+    """Получение персонального количества строк для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else DEFAULT_LINES_TO_KEEP
+
+def set_user_lines_to_keep(user_id, lines):
+    """Установка персонального количества строк для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)', 
+              (user_id, lines))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    """Получение списка всех пользователей"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT user_id, username, is_verified, is_admin FROM users')
+    users = c.fetchall()
+    conn.close()
+    return users
+
+def remove_user(user_id):
+    """Удаление пользователя из базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_lines_to_keep():
+    """Получение количества строк для сохранения"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else DEFAULT_LINES_TO_KEEP
+
+def set_lines_to_keep(lines):
+    """Установка количества строк для сохранения"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
+    conn.commit()
+    conn.close()
 
 def main():
     # Создаем и настраиваем приложение
@@ -502,11 +696,14 @@ def main():
             CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
             MENU: [
                 MessageHandler(filters.Document.ALL, process_file),
-                MessageHandler(filters.Regex('^(📤 Обработать файл|ℹ️ Помощь|📊 Статистика|⚙️ Настройки)$'), handle_menu)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
             ],
             SETTINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_settings)],
             TECH_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_tech_commands)],
-            OTHER_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_other_commands)]
+            OTHER_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_other_commands)],
+            USER_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_user_management)],
+            MERGE_FILES: [MessageHandler(filters.Document.ALL, process_merge_files)],
+            SET_LINES: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_set_lines)]
         },
         fallbacks=[
             CommandHandler('start', start),
