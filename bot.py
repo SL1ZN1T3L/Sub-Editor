@@ -13,6 +13,13 @@ import aiohttp
 # Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("Не указан токен бота в файле .env (BOT_TOKEN)")
+
+# Получаем админский код из .env
+ADMIN_CODE = os.getenv('ADMIN_CODE')
+if not ADMIN_CODE:
+    raise ValueError("Не указан код администратора в файле .env (ADMIN_CODE)")
 
 # Константы для ограничений
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -22,9 +29,6 @@ DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолча�
 
 # Состояния разговора
 CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE = range(9)
-
-# Код администратора
-ADMIN_CODE = 'YH8jRnO1Np8wVUZobJfwPIv'
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
