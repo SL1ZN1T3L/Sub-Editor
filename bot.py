@@ -69,6 +69,7 @@ def setup_database():
             is_verified BOOLEAN DEFAULT FALSE,
             is_admin BOOLEAN DEFAULT FALSE,
             usage_count INTEGER DEFAULT 0,
+            merged_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -94,6 +95,13 @@ def setup_database():
     c.execute('SELECT COUNT(*) FROM bot_status')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
+    
+    # Добавляем поле merged_count, если его нет
+    try:
+        c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        # Колонка уже существует
+        pass
     
     conn.commit()
     conn.close()
@@ -277,13 +285,18 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT usage_count FROM users WHERE user_id = ?', (update.effective_user.id,))
-        usage_count = c.fetchone()[0]
+        c.execute('SELECT usage_count, merged_count FROM users WHERE user_id = ?', (update.effective_user.id,))
+        stats = c.fetchone()
+        usage_count = stats[0] if stats else 0
+        merged_count = stats[1] if stats else 0
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         conn.close()
         
         await update.message.reply_text(
-            f"📊 Статистика использования:\n"
-            f"Вы обработали файлов: {usage_count}"
+            f"📊 Ваша статистика:\n\n"
+            f"1. Обработано файлов: {usage_count}\n"
+            f"2. Объединено подписок: {merged_count}\n"
+            f"3. Выбранное количество строк: {lines_to_keep}"
         )
     elif text == '⚙️ Настройки':
         return await settings_command(update, context)
@@ -765,7 +778,9 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
             # Кодируем обратно в Base64
             encoded_config = base64.b64encode(merged_config.encode('utf-8')).decode('utf-8')
             
-            # Отправляем текст с возможностью копирования
+            # Увеличиваем счетчик объединений
+            increment_merge_count(update.effective_user.id)
+            
             await update.message.reply_text(
                 f"Объединенная подписка (нажмите, чтобы скопировать):\n\n"
                 f"`{encoded_config}`",
@@ -787,6 +802,14 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
         return MENU
     else:
         return await process_merge_files(update, context)
+
+def increment_merge_count(user_id):
+    """Увеличение счетчика объединенных подписок"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE users SET merged_count = merged_count + 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
 
 def main():
     # Создаем и настраиваем приложение
