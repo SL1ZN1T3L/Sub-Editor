@@ -248,7 +248,23 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
         return MENU
     
+    # Проверяем, отправлен ли файл
+    if update.message.document:
+        await update.message.reply_text(
+            "Для обработки файла сначала нажмите кнопку '📤 Обработать файл'",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+    
     text = update.message.text
+    
+    # Проверяем, является ли текст ссылкой
+    if text and text.startswith('http'):
+        await update.message.reply_text(
+            "Для объединения подписок сначала нажмите кнопку '🔄 Объединить подписки'",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
     
     if text == '📤 Обработать файл':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
@@ -578,8 +594,14 @@ def merge_vless_subscriptions(subscriptions):
     return '\n'.join(merged_configs)
 
 async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+        
     try:
-        lines = int(update.message.text)
+        lines = int(text)
         if 1 <= lines <= MAX_LINKS:
             if is_admin(update.effective_user.id):
                 # Админ меняет глобальные настройки
@@ -840,7 +862,7 @@ def main():
         states={
             CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
             MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
+                MessageHandler(filters.TEXT & ~filters.COMMAND | filters.Document.ALL, handle_menu)
             ],
             PROCESS_FILE: [
                 MessageHandler(filters.Document.ALL, process_file),
