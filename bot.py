@@ -235,6 +235,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '- Максимальное количество ссылок: 1000\n'
             '- Поддерживаемые форматы: .txt, .csv, .md'
         )
+        return PROCESS_FILE
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
@@ -527,7 +528,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверка наличия документа
         if not update.message.document:
             await update.message.reply_text("Пожалуйста, отправьте текстовый файл.")
-            return MENU
+            return PROCESS_FILE
 
         document = update.message.document
         
@@ -537,14 +538,14 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Неподдерживаемый формат файла. Разрешены только: {', '.join(ALLOWED_EXTENSIONS)}"
             )
-            return MENU
+            return PROCESS_FILE
 
         # Проверка размера файла
         if document.file_size > MAX_FILE_SIZE:
             await update.message.reply_text(
                 f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024 * 1024)} MB"
             )
-            return MENU
+            return PROCESS_FILE
 
         # Скачиваем файл
         file = await context.bot.get_file(document.file_id)
@@ -559,7 +560,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     "Ошибка при чтении файла. Убедитесь, что файл в кодировке UTF-8 или Windows-1251."
                 )
-                return MENU
+                return PROCESS_FILE
 
         # Получаем строки из файла
         lines = [line.strip() for line in content.splitlines() if line.strip()]
@@ -569,13 +570,13 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"Слишком много строк в файле. Максимально допустимо: {MAX_LINKS}"
             )
-            return MENU
+            return PROCESS_FILE
 
         if not lines:
             await update.message.reply_text(
                 "Файл пуст или не содержит текстовых строк."
             )
-            return MENU
+            return PROCESS_FILE
 
         # Получаем количество строк для конкретного пользователя
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
@@ -604,6 +605,10 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(output_filename):
                 os.remove(output_filename)
         
+        # Возвращаемся в главное меню
+        await show_menu(update, context)
+        return MENU
+        
     except Exception as e:
         error_message = f"Произошла ошибка при обработке файла: {str(e)}"
         log_error(update.effective_user.id, error_message)
@@ -611,8 +616,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова."
         )
-    
-    return MENU
+        return PROCESS_FILE
 
 def get_user_lines_to_keep(user_id):
     """Получение персонального количества строк для пользователя"""
@@ -695,6 +699,9 @@ def main():
         states={
             CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
             MENU: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
+            ],
+            PROCESS_FILE: [
                 MessageHandler(filters.Document.ALL, process_file),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
             ],
