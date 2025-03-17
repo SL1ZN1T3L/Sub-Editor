@@ -36,10 +36,22 @@ for directory in [TEMP_DIR, LOG_DIR]:
 
 def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
-    log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(log_file, 'a', encoding='utf-8') as f:
-        f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
+    try:
+        # Создаем директорию для логов, если её нет
+        if not os.path.exists(LOG_DIR):
+            os.makedirs(LOG_DIR)
+        
+        log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Открываем файл в режиме добавления с указанием кодировки
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
+            f.flush()  # Принудительно записываем буфер
+            os.fsync(f.fileno())  # Убеждаемся, что данные записаны на диск
+    except Exception as e:
+        print(f"Ошибка при логировании: {str(e)}")
+        print(f"[{timestamp}] User {user_id}: {error_message}")
 
 # Создание базы данных
 def setup_database():
@@ -354,7 +366,8 @@ async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Бот выключен. Теперь он на техническом обслуживании.")
     elif text == "Перезапустить бота":
         await update.message.reply_text("Перезапуск бота...")
-        os.execv(sys.executable, ['python'] + sys.argv)
+        # Завершаем процесс, systemd или другой менеджер процессов перезапустит бот
+        sys.exit(0)
     
     return TECH_COMMANDS
 
