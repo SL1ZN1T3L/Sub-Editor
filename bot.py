@@ -373,7 +373,6 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard=[
                 [KeyboardButton(text="Написать всем пользователям")],
                 [KeyboardButton(text="Управление пользователями")],
-                [KeyboardButton(text="Настройка количества строк")],
                 [KeyboardButton(text="Назад")]
             ],
             resize_keyboard=True
@@ -441,14 +440,14 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
         for user in users:
             user_list += (
-                f"ID: {user[0]}\n"
+                f"ID: `{user[0]}`\n"
                 f"Имя: {user[1] or 'Не указано'}\n"
                 f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
                 f"Админ: {'Да' if user[3] else 'Нет'}\n"
                 f"Обработано файлов: {user[4]}\n\n"
             )
         
-        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:")
+        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", parse_mode='Markdown')
         return USER_MANAGEMENT
     elif text == "Объединить подписки":
         await update.message.reply_text("Отправьте первый файл для объединения:")
