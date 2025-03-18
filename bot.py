@@ -7,6 +7,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 import sys
 from datetime import datetime
 import base64
+from urllib.parse import urlparse, parse_qs, unquote
 import aiohttp
 
 # Загрузка переменных окружения
@@ -91,6 +92,13 @@ def setup_database():
     c.execute('SELECT COUNT(*) FROM bot_status')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
+    
+    # Добавляем поле merged_count, если его нет
+    try:
+        c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        # Колонка уже существует
+        pass
     
     conn.commit()
     conn.close()
