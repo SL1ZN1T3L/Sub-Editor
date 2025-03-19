@@ -14,6 +14,13 @@ import aiohttp
 # Загрузка переменных окружения
 load_dotenv()
 TOKEN = os.getenv('BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("Не указан токен бота в файле .env (BOT_TOKEN)")
+
+# Получаем админский код из .env
+ADMIN_CODE = os.getenv('ADMIN_CODE')
+if not ADMIN_CODE:
+    raise ValueError("Не указан код администратора в файле .env (ADMIN_CODE)")
 
 # Константы для ограничений
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -23,9 +30,6 @@ DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолча�
 
 # Состояния разговора
 CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, MANAGE_USERS = range(10)
-
-# Код администратора
-ADMIN_CODE = 'YH8jRnO1Np8wVUZobJfwPIv'
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,18 +45,11 @@ for directory in [TEMP_DIR, LOG_DIR]:
 def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
     try:
-        # Создаем директорию для логов, если её нет
-        if not os.path.exists(LOG_DIR):
-            os.makedirs(LOG_DIR)
-        
         log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Открываем файл в режиме добавления с указанием кодировки
         with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
-            f.flush()  # Принудительно записываем буфер
-            os.fsync(f.fileno())  # Убеждаемся, что данные записаны на диск
     except Exception as e:
         print(f"Ошибка при логировании: {str(e)}")
         print(f"[{timestamp}] User {user_id}: {error_message}")
@@ -69,7 +66,7 @@ def setup_database():
             is_verified BOOLEAN DEFAULT FALSE,
             is_admin BOOLEAN DEFAULT FALSE,
             usage_count INTEGER DEFAULT 0,
-            merge_count INTEGER DEFAULT 0,
+            merged_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -95,6 +92,13 @@ def setup_database():
     c.execute('SELECT COUNT(*) FROM bot_status')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
+    
+    # Добавляем поле merged_count, если его нет
+    try:
+        c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        # Колонка уже существует
+        pass
     
     conn.commit()
     conn.close()
@@ -241,7 +245,23 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
         return MENU
     
+    # Проверяем, отправлен ли файл
+    if update.message.document:
+        await update.message.reply_text(
+            "Для обработки файла сначала нажмите кнопку '📤 Обработать файл'",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+    
     text = update.message.text
+    
+    # Проверяем, является ли текст ссылкой
+    if text and text.startswith('http'):
+        await update.message.reply_text(
+            "Для объединения подписок сначала нажмите кнопку '🔄 Объединить подписки'",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
     
     if text == '📤 Обработать файл':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
@@ -255,31 +275,46 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return PROCESS_FILE
     elif text == '🔄 Объединить подписки':
+        keyboard = [
+            [KeyboardButton("Объединить")],
+            [KeyboardButton("Назад")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(
-            "Отправьте URL подписки.\n"
-            "После отправки всех подписок (минимум 2) нажмите 'Объединить'."
+            "Отправьте ссылки на подписки для объединения:",
+            reply_markup=reply_markup
         )
         return MERGE_FILES
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
-            "Этот бот помогает обрабатывать файлы и объединять VPN-подписки.\n\n"
-            "Как использовать:\n"
-            "1. 📤 Обработать файл - обработка файлов со ссылками\n"
-            "2. 🔄 Объединить подписки - объединение VPN-конфигураций\n"
-            "3. ⚙️ Настройки - персональные настройки\n\n"
-            "Поддерживаемые форматы для файлов: .txt, .csv, .md\n"
-            "Поддерживаемые подписки: VLESS"
+            "🤖 Этот бот помогает обрабатывать файлы и объединять подписки.\n\n"
+            "📤 Обработка файлов:\n"
+            f"1. Нажмите '📤 Обработать файл'\n"
+            f"2. Отправьте файл со ссылками\n"
+            f"3. Получите обработанный файл с последними {lines_to_keep} ссылками\n\n"
+            "🔄 Объединение подписок:\n"
+            "1. Нажмите '🔄 Объединить подписки'\n"
+            "2. Отправьте ссылки на подписки по одной\n"
+            "3. Нажмите 'Объединить' когда закончите\n\n"
+            "⚙️ Настройки:\n"
+            "- Настройка количества строк для обработки файлов\n\n"
+            "📊 Статистика:\n"
+            "- Количество обработанных файлов\n"
+            "- Количество объединенных подписок\n"
+            "- Текущее количество строк\n\n"
+            "Поддерживаемые форматы файлов: .txt, .csv, .md\n"
+            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB\n"
+            f"Максимальное количество строк: {MAX_LINKS}"
         )
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('''
-            SELECT usage_count, merge_count 
-            FROM users 
-            WHERE user_id = ?
-        ''', (update.effective_user.id,))
-        result = c.fetchone()
+        c.execute('SELECT usage_count, merged_count FROM users WHERE user_id = ?', (update.effective_user.id,))
+        stats = c.fetchone()
+        usage_count = stats[0] if stats else 0
+        merged_count = stats[1] if stats else 0
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         conn.close()
         
         files_count = result[0] if result else 0
@@ -288,9 +323,9 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             f"📊 Ваша статистика:\n\n"
-            f"📁 Обработано файлов: {files_count}\n"
-            f"🔄 Объединено подписок: {merge_count}\n"
-            f"📏 Текущее количество строк: {lines_count}"
+            f"1. Обработано файлов: {usage_count}\n"
+            f"2. Объединено подписок: {merged_count}\n"
+            f"3. Выбранное количество строк: {lines_to_keep}"
         )
         return MENU
     elif text == '⚙️ Настройки':
@@ -364,12 +399,20 @@ async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Выберите техническую команду:", reply_markup=reply_markup)
         return TECH_COMMANDS
-        
-    elif text == "Рассылка сообщений" and is_admin(update.effective_user.id):
-        # Добавьте обработку рассылки сообщений здесь
-        pass
-    
-    return SETTINGS
+    elif text == "Другое" and is_admin(update.effective_user.id):
+        markup = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Написать всем пользователям")],
+                [KeyboardButton(text="Управление пользователями")],
+                [KeyboardButton(text="Назад")]
+            ],
+            resize_keyboard=True
+        )
+        await update.message.reply_text("Другое:", reply_markup=markup)
+        return OTHER_COMMANDS
+    else:
+        await update.message.reply_text("Пожалуйста, выберите действие из меню.")
+        return SETTINGS
 
 async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -428,14 +471,14 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
         for user in users:
             user_list += (
-                f"ID: {user[0]}\n"
+                f"ID: `{user[0]}`\n"
                 f"Имя: {user[1] or 'Не указано'}\n"
                 f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
                 f"Админ: {'Да' if user[3] else 'Нет'}\n"
                 f"Обработано файлов: {user[4]}\n\n"
             )
         
-        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:")
+        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", parse_mode='Markdown')
         return USER_MANAGEMENT
     elif text == "Объединить подписки":
         await update.message.reply_text("Отправьте первый файл для объединения:")
@@ -608,12 +651,14 @@ def merge_vless_subscriptions(subscriptions):
     return '\n'.join(merged_configs)
 
 async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "Назад":
+    text = update.message.text
+    
+    if text == "Назад":
         await settings_command(update, context)
         return SETTINGS
-
+        
     try:
-        lines = int(update.message.text)
+        lines = int(text)
         if 1 <= lines <= MAX_LINKS:
             if is_admin(update.effective_user.id):
                 # Админ меняет глобальные настройки
@@ -811,11 +856,49 @@ def increment_usage_count(user_id):
     conn.commit()
     conn.close()
 
+async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "Объединить":
+        if context.user_data.get('count', 0) < 2:
+            await update.message.reply_text("Необходимо как минимум 2 подписки для объединения.")
+            return MERGE_FILES
+
+        try:
+            # Объединяем VLESS-конфигурации
+            merged_config = merge_vless_subscriptions(context.user_data['subscriptions'])
+            
+            # Кодируем обратно в Base64
+            encoded_config = base64.b64encode(merged_config.encode('utf-8')).decode('utf-8')
+            
+            # Увеличиваем счетчик объединений
+            increment_merge_count(update.effective_user.id)
+            
+            await update.message.reply_text(
+                f"Объединенная подписка (нажмите, чтобы скопировать):\n\n"
+                f"`{encoded_config}`",
+                parse_mode='Markdown'
+            )
+
+            # Очищаем данные
+            context.user_data.clear()
+            await show_menu(update, context)
+            return MENU
+            
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка при объединении подписок: {str(e)}")
+            return MERGE_FILES
+            
+    elif update.message.text == "Назад":
+        context.user_data.clear()
+        await show_menu(update, context)
+        return MENU
+    else:
+        return await process_merge_files(update, context)
+
 def increment_merge_count(user_id):
     """Увеличение счетчика объединенных подписок"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('UPDATE users SET merge_count = merge_count + 1 WHERE user_id = ?', (user_id,))
+    c.execute('UPDATE users SET merged_count = merged_count + 1 WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
 
@@ -848,7 +931,7 @@ def main():
         states={
             CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
             MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
+                MessageHandler(filters.TEXT & ~filters.COMMAND | filters.Document.ALL, handle_menu)
             ],
             PROCESS_FILE: [
                 MessageHandler(filters.Document.ALL, process_file),
