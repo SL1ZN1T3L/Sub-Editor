@@ -13,6 +13,9 @@ import aiohttp
 =======
 import qrcode
 import operator
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
 # Загрузка переменных окружения
@@ -47,11 +50,14 @@ TEMP_DIR = os.path.join(BOT_DIR, 'temp')
 LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 # Создаем директории если их нет
 for directory in [TEMP_DIR, LOG_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
 =======
+=======
+>>>>>>> Stashed changes
 # Добавим константы для ролей
 class UserRole:
     ADMIN = "admin"
@@ -184,6 +190,9 @@ def verify_user(user_id, username, role=UserRole.USER):
 =======
     # Проверяем существующие данные пользователя
     c.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
     result = c.fetchone()
     is_admin_status = result[0] if result else False
@@ -208,6 +217,9 @@ def verify_user(user_id, username, role=UserRole.USER):
         (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
         VALUES (?, ?, TRUE, ?, ?, ?, ?)
     ''', (user_id, username, role, usage_count, merged_count, qr_count))
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
     
     conn.commit()
@@ -861,8 +873,11 @@ def get_all_users():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     c.execute('SELECT user_id, username, is_verified, is_admin, usage_count FROM users')
 =======
+=======
+>>>>>>> Stashed changes
     c.execute('''SELECT user_id, username, is_verified, role, 
                  usage_count, merged_count, qr_count FROM users''')
 >>>>>>> Stashed changes
@@ -1107,6 +1122,109 @@ def get_user_role(user_id):
     result = c.fetchone()
     conn.close()
     return result[0] if result else UserRole.USER
+<<<<<<< Updated upstream
+=======
+
+def check_admin_rights(user_id):
+    """Проверка прав администратора"""
+    return get_user_role(user_id) == UserRole.ADMIN
+
+def check_user_plus_rights(user_id):
+    """Проверка прав привилегированного пользователя"""
+    role = get_user_role(user_id)
+    return role in [UserRole.ADMIN, UserRole.USER_PLUS]
+
+async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🔑 *Команды администратора:*
+
+📝 Основные команды:
+• `/start admin[код]` - Получить права администратора
+• `/start user_plus[код]` - Получить права привилегированного пользователя
+
+⚙️ Технические команды:
+• Включить/выключить бота
+• Перезапустить бота
+• Просмотр статистики
+
+👥 Управление пользователями:
+• Просмотр списка пользователей
+• Блокировка/разблокировка пользователей
+• Массовая рассылка сообщений
+
+💡 Примеры использования:
+• `/start adminYH8jRnO1Np8wVUZobJfwPIv`
+• `/start user_plusUj9kLmP2Qw3Er4Ty5`
+"""
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+def main():
+    try:
+        # Создаем необходимые директории
+        ensure_directories()
+        
+        # Создаем и настраиваем приложение
+        application = Application.builder().token(TOKEN).build()
+        
+        # Создаем базу данных
+        setup_database()
+        
+        async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            """Восстановление меню для верифицированных пользователей"""
+            if is_user_verified(update.effective_user.id):
+                if not is_bot_enabled() and not is_admin(update.effective_user.id):
+                    await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+                    return ConversationHandler.END
+                await show_menu(update, context)
+                return MENU
+            else:
+                await update.message.reply_text("Пожалуйста, используйте команду /start для начала работы.")
+                return ConversationHandler.END
+        
+        # Создаем обработчик разговора
+        conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler('start', start),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
+                MessageHandler(filters.Document.ALL, restore_menu)
+            ],
+            states={
+                CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
+                MENU: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND | filters.Document.ALL, handle_menu)
+                ],
+                PROCESS_FILE: [
+                    MessageHandler(filters.Document.ALL, process_file),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
+                ],
+                SETTINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_settings)],
+                TECH_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_tech_commands)],
+                OTHER_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_other_commands)],
+                USER_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_user_management)],
+                MERGE_FILES: [
+                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, process_merge_command)
+                ],
+                SET_LINES: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_set_lines)],
+                QR_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_type)],
+                QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)]
+            },
+            fallbacks=[
+                CommandHandler('start', start),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
+                MessageHandler(filters.Document.ALL, restore_menu)
+            ]
+        )
+        
+        # Добавляем обработчик разговора
+        application.add_handler(conv_handler)
+        
+        # Запускаем бота
+        print(f"Бот запущен и готов к работе!")
+        print(f"База данных: {DB_PATH}")
+        print(f"Временные файлы: {TEMP_DIR}")
+        print(f"Логи: {LOG_DIR}")
+        application.run_polling()
+>>>>>>> Stashed changes
 
 def check_admin_rights(user_id):
     """Проверка прав администратора"""
