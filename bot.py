@@ -8,8 +8,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 import sys
 from datetime import datetime
 import base64
-from urllib.parse import urlparse, parse_qs, unquote
 import aiohttp
+import qrcode
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -29,7 +29,11 @@ ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пуст�
 DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолчанию
 
 # Состояния разговора
+<<<<<<< Updated upstream
 CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, MANAGE_USERS = range(10)
+=======
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA = range(11)
+>>>>>>> Stashed changes
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,10 +41,15 @@ DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
 TEMP_DIR = os.path.join(BOT_DIR, 'temp')
 LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
-# Создаем директории если их нет
-for directory in [TEMP_DIR, LOG_DIR]:
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+def ensure_directories():
+    """Создание необходимых директорий с обработкой ошибок"""
+    for directory in [TEMP_DIR, LOG_DIR]:
+        try:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+        except Exception as e:
+            print(f"Ошибка при создании директории {directory}: {e}")
+            sys.exit(1)
 
 def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
@@ -67,6 +76,7 @@ def setup_database():
             is_admin BOOLEAN DEFAULT FALSE,
             usage_count INTEGER DEFAULT 0,
             merged_count INTEGER DEFAULT 0,
+            qr_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -97,7 +107,12 @@ def setup_database():
     try:
         c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
     except sqlite3.OperationalError:
-        # Колонка уже существует
+        pass
+    
+    # Добавляем поле qr_count, если его нет
+    try:
+        c.execute('ALTER TABLE users ADD COLUMN qr_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
         pass
     
     conn.commit()
@@ -126,16 +141,21 @@ def verify_user(user_id, username):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Проверяем, существует ли пользователь и является ли он админом
-    c.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+    # Проверяем существующие данные пользователя
+    c.execute('SELECT is_admin, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
     result = c.fetchone()
-    is_admin_status = result[0] if result else False
     
-    # Обновляем или добавляем пользователя, сохраняя статус админа
+    if result:
+        is_admin, usage_count, merged_count, qr_count = result
+    else:
+        is_admin, usage_count, merged_count, qr_count = False, 0, 0, 0
+    
+    # Обновляем или добавляем пользователя, сохраняя все счетчики
     c.execute('''
-        INSERT OR REPLACE INTO users (user_id, username, is_verified, is_admin)
-        VALUES (?, ?, TRUE, ?)
-    ''', (user_id, username, is_admin_status))
+        INSERT OR REPLACE INTO users 
+        (user_id, username, is_verified, is_admin, usage_count, merged_count, qr_count)
+        VALUES (?, ?, TRUE, ?, ?, ?, ?)
+    ''', (user_id, username, is_admin, usage_count, merged_count, qr_count))
     
     conn.commit()
     conn.close()
@@ -167,9 +187,21 @@ def get_menu_keyboard(user_id):
     """Создание клавиатуры с меню"""
     keyboard = [
         ['📤 Обработать файл'],
-        ['🔄 Объединить подписки'],
+        ['🔄 Объединить подписки', '📱 Создать QR-код'],
         ['ℹ️ Помощь', '📊 Статистика'],
         ['⚙️ Настройки']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_qr_type_keyboard():
+    """Создание клавиатуры выбора типа QR-кода"""
+    keyboard = [
+        ['🔗 Ссылка', '📝 Текст'],
+        ['📧 Электронная почта', '📍 Местоположение'],
+        ['📞 Телефон', '✉️ СМС'],
+        ['📱 WhatsApp', '📶 Wi-Fi'],
+        ['👤 Визитка'],
+        ['Назад']
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -285,10 +317,16 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
         return MERGE_FILES
+    elif text == '📱 Создать QR-код':
+        await update.message.reply_text(
+            "Выберите тип QR-кода:",
+            reply_markup=get_qr_type_keyboard()
+        )
+        return QR_TYPE
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
-            "🤖 Этот бот помогает обрабатывать файлы и объединять подписки.\n\n"
+            "🤖 Этот бот помогает обрабатывать файлы, объединять подписки и создавать QR-коды.\n\n"
             "📤 Обработка файлов:\n"
             f"1. Нажмите '📤 Обработать файл'\n"
             f"2. Отправьте файл со ссылками\n"
@@ -297,11 +335,16 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1. Нажмите '🔄 Объединить подписки'\n"
             "2. Отправьте ссылки на подписки по одной\n"
             "3. Нажмите 'Объединить' когда закончите\n\n"
+            "📱 Создание QR-кодов:\n"
+            "1. Нажмите '📱 Создать QR-код'\n"
+            "2. Выберите тип QR-кода\n"
+            "3. Введите необходимые данные\n\n"
             "⚙️ Настройки:\n"
             "- Настройка количества строк для обработки файлов\n\n"
             "📊 Статистика:\n"
             "- Количество обработанных файлов\n"
             "- Количество объединенных подписок\n"
+            "- Количество созданных QR-кодов\n"
             "- Текущее количество строк\n\n"
             "Поддерживаемые форматы файлов: .txt, .csv, .md\n"
             f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB\n"
@@ -310,10 +353,12 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT usage_count, merged_count FROM users WHERE user_id = ?', (update.effective_user.id,))
+        c.execute('SELECT usage_count, merged_count, qr_count FROM users WHERE user_id = ?', 
+                 (update.effective_user.id,))
         stats = c.fetchone()
         usage_count = stats[0] if stats else 0
         merged_count = stats[1] if stats else 0
+        qr_count = stats[2] if stats else 0
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         conn.close()
         
@@ -325,7 +370,8 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Ваша статистика:\n\n"
             f"1. Обработано файлов: {usage_count}\n"
             f"2. Объединено подписок: {merged_count}\n"
-            f"3. Выбранное количество строк: {lines_to_keep}"
+            f"3. Создано QR-кодов: {qr_count}\n"
+            f"4. Выбранное количество строк: {lines_to_keep}"
         )
         return MENU
     elif text == '⚙️ Настройки':
@@ -466,7 +512,7 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text("В базе данных нет пользователей.")
             return OTHER_COMMANDS
         
-        verified_count = sum(1 for user in users if user[2])  # Подсчет верифицированных пользователей
+        verified_count = sum(1 for user in users if user[2])
         
         user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
         for user in users:
@@ -475,10 +521,13 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
                 f"Имя: {user[1] or 'Не указано'}\n"
                 f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
                 f"Админ: {'Да' if user[3] else 'Нет'}\n"
-                f"Обработано файлов: {user[4]}\n\n"
+                f"Обработано файлов: {user[4]}\n"
+                f"Объединено подписок: {user[5]}\n"
+                f"Создано QR-кодов: {user[6]}\n\n"
             )
         
-        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", parse_mode='Markdown')
+        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", 
+                                      parse_mode='Markdown')
         return USER_MANAGEMENT
     elif text == "Объединить подписки":
         await update.message.reply_text("Отправьте первый файл для объединения:")
@@ -765,9 +814,11 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=f,
-                    filename=f'{original_name}.html',  # Используем оригинальное имя
+                    filename=f'{original_name}.html',
                     caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
                 )
+            # Увеличиваем счетчик после успешной отправки
+            increment_usage_count(update.effective_user.id)
         finally:
             # Удаляем временный файл
             if os.path.exists(output_filename):
@@ -807,6 +858,7 @@ def set_user_lines_to_keep(user_id, lines):
 def get_all_users():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+<<<<<<< Updated upstream
     c.execute('''
         SELECT user_id, username, verified, is_admin, usage_count 
         FROM users
@@ -820,6 +872,11 @@ def get_all_users():
             'is_admin': bool(row[3]),
             'usage_count': row[4]
         })
+=======
+    c.execute('''SELECT user_id, username, is_verified, is_admin, 
+                 usage_count, merged_count, qr_count FROM users''')
+    users = c.fetchall()
+>>>>>>> Stashed changes
     conn.close()
     return users
 
@@ -902,37 +959,185 @@ def increment_merge_count(user_id):
     conn.commit()
     conn.close()
 
-def main():
-    # Создаем и настраиваем приложение
-    application = Application.builder().token(TOKEN).build()
+async def process_qr_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
     
-    # Создаем базу данных
-    setup_database()
+    if text == "Назад":
+        await show_menu(update, context)
+        return MENU
     
-    async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Восстановление меню для верифицированных пользователей"""
-        if is_user_verified(update.effective_user.id):
-            if not is_bot_enabled() and not is_admin(update.effective_user.id):
-                await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
-                return ConversationHandler.END
-            await show_menu(update, context)
+    qr_types = {
+        '🔗 Ссылка': ('Отправьте URL:', 'URL'),
+        '📝 Текст': ('Отправьте текст:', 'TEXT'),
+        '📧 Электронная почта': ('Отправьте email и тему (через пробел):', 'EMAIL'),
+        '📍 Местоположение': ('Отправьте координаты (широта пробел долгота):', 'GEO'),
+        '📞 Телефон': ('Отправьте номер телефона:', 'TEL'),
+        '✉️ СМС': ('Отправьте номер телефона и текст (через пробел):', 'SMS'),
+        '📱 WhatsApp': ('Отправьте номер WhatsApp и сообщение (через пробел):', 'WHATSAPP'),
+        '📶 Wi-Fi': ('Отправьте SSID и пароль (через пробел):', 'WIFI'),
+        '👤 Визитка': ('Отправьте данные в формате: ФИО Телефон Email Компания Должность', 'VCARD')
+    }
+    
+    if text in qr_types:
+        context.user_data['qr_type'] = qr_types[text][1]
+        keyboard = ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+        await update.message.reply_text(qr_types[text][0], reply_markup=keyboard)
+        return QR_DATA
+    
+    await update.message.reply_text("Пожалуйста, выберите тип QR-кода из меню.")
+    return QR_TYPE
+
+async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    temp_filename = None
+    try:
+        if update.message.text == "Назад":
+            await update.message.reply_text(
+                "Выберите тип QR-кода:",
+                reply_markup=get_qr_type_keyboard()
+            )
+            return QR_TYPE
+        
+        try:
+            qr_type = context.user_data.get('qr_type')
+            data = update.message.text.strip()
+            
+            # Формируем содержимое QR-кода в зависимости от типа
+            if qr_type == 'URL':
+                qr_content = data if data.startswith(('http://', 'https://')) else f'https://{data}'
+            elif qr_type == 'TEXT':
+                qr_content = data
+            elif qr_type == 'EMAIL':
+                email, *subject = data.split()
+                qr_content = f'mailto:{email}?subject={"+".join(subject)}'
+            elif qr_type == 'GEO':
+                lat, lon = data.split()
+                qr_content = f'geo:{lat},{lon}'
+            elif qr_type == 'TEL':
+                qr_content = f'tel:{data.replace(" ", "")}'
+            elif qr_type == 'SMS':
+                phone, *message = data.split()
+                qr_content = f'smsto:{phone}:{" ".join(message)}'
+            elif qr_type == 'WHATSAPP':
+                phone, *message = data.split()
+                qr_content = f'whatsapp://send?phone={phone.replace("+", "")}&text={"+".join(message)}'
+            elif qr_type == 'WIFI':
+                ssid, password = data.split(maxsplit=1)
+                qr_content = f'WIFI:S:{ssid};T:WPA;P:{password};;'
+            elif qr_type == 'VCARD':
+                name, phone, email, company, title = data.split(maxsplit=4)
+                qr_content = f'BEGIN:VCARD\nVERSION:3.0\nN:{name}\nTEL:{phone}\nEMAIL:{email}\nORG:{company}\nTITLE:{title}\nEND:VCARD'
+            
+            # Создаем QR-код
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(qr_content)
+            qr.make(fit=True)
+            
+            # Создаем изображение
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Создаем временный файл для QR-кода
+            temp_filename = os.path.join(TEMP_DIR, f'qr_{update.effective_user.id}.png')
+            
+            # Сохраняем изображение в файл
+            img.save(temp_filename)
+            
+            # Отправляем изображение
+            with open(temp_filename, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption="Ваш QR-код готов!",
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+            
+            # Увеличиваем счетчик созданных QR-кодов
+            increment_qr_count(update.effective_user.id)
+            
+            # Очищаем данные пользователя
+            context.user_data.clear()
+            
             return MENU
-        else:
-            await update.message.reply_text("Пожалуйста, используйте команду /start для начала работы.")
-            return ConversationHandler.END
+            
+        except Exception as e:
+            error_message = f"Ошибка при создании QR-кода: {str(e)}"
+            log_error(update.effective_user.id, error_message)
+            if temp_filename and os.path.exists(temp_filename):
+                os.remove(temp_filename)
+            await update.message.reply_text(
+                "Произошла ошибка. Пожалуйста, проверьте формат данных и попробуйте снова.",
+                reply_markup=get_qr_type_keyboard()
+            )
+            return QR_TYPE
+
+    except Exception as e:
+        error_message = f"Ошибка при создании QR-кода: {str(e)}"
+        log_error(update.effective_user.id, error_message)
+        if temp_filename and os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        await update.message.reply_text(
+            "Произошла ошибка. Пожалуйста, проверьте формат данных и попробуйте снова.",
+            reply_markup=get_qr_type_keyboard()
+        )
+        return QR_TYPE
+
+def increment_qr_count(user_id):
+    """Увеличение счетчика созданных QR-кодов"""
+    conn = safe_db_connect()
+    if not conn:
+        return
     
-    # Создаем обработчик разговора
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler('start', start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
-            MessageHandler(filters.Document.ALL, restore_menu)
-        ],
-        states={
-            CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
-            MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND | filters.Document.ALL, handle_menu)
+    try:
+        c = conn.cursor()
+        c.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
+    finally:
+        conn.close()
+
+def safe_db_connect():
+    """Безопасное подключение к базе данных"""
+    try:
+        return sqlite3.connect(DB_PATH)
+    except sqlite3.Error as e:
+        print(f"Ошибка подключения к базе данных: {e}")
+        return None
+
+def main():
+    try:
+        # Создаем необходимые директории
+        ensure_directories()
+        
+        # Создаем и настраиваем приложение
+        application = Application.builder().token(TOKEN).build()
+        
+        # Создаем базу данных
+        setup_database()
+        
+        async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            """Восстановление меню для верифицированных пользователей"""
+            if is_user_verified(update.effective_user.id):
+                if not is_bot_enabled() and not is_admin(update.effective_user.id):
+                    await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+                    return ConversationHandler.END
+                await show_menu(update, context)
+                return MENU
+            else:
+                await update.message.reply_text("Пожалуйста, используйте команду /start для начала работы.")
+                return ConversationHandler.END
+        
+        # Создаем обработчик разговора
+        conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler('start', start),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
+                MessageHandler(filters.Document.ALL, restore_menu)
             ],
+<<<<<<< Updated upstream
             PROCESS_FILE: [
                 MessageHandler(filters.Document.ALL, process_file),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
@@ -965,6 +1170,48 @@ def main():
     print(f"Временные файлы: {TEMP_DIR}")
     print(f"Логи: {LOG_DIR}")
     application.run_polling()
+=======
+            states={
+                CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
+                MENU: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND | filters.Document.ALL, handle_menu)
+                ],
+                PROCESS_FILE: [
+                    MessageHandler(filters.Document.ALL, process_file),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
+                ],
+                SETTINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_settings)],
+                TECH_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_tech_commands)],
+                OTHER_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_other_commands)],
+                USER_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_user_management)],
+                MERGE_FILES: [
+                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, process_merge_command)
+                ],
+                SET_LINES: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_set_lines)],
+                QR_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_type)],
+                QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)]
+            },
+            fallbacks=[
+                CommandHandler('start', start),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
+                MessageHandler(filters.Document.ALL, restore_menu)
+            ]
+        )
+        
+        # Добавляем обработчик разговора
+        application.add_handler(conv_handler)
+        
+        # Запускаем бота
+        print(f"Бот запущен и готов к работе!")
+        print(f"База данных: {DB_PATH}")
+        print(f"Временные файлы: {TEMP_DIR}")
+        print(f"Логи: {LOG_DIR}")
+        application.run_polling()
+
+    except Exception as e:
+        print(f"Критическая ошибка при запуске бота: {e}")
+        sys.exit(1)
+>>>>>>> Stashed changes
 
 if __name__ == '__main__':
     main() 
