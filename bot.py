@@ -9,6 +9,11 @@ from datetime import datetime
 import base64
 from urllib.parse import urlparse, parse_qs, unquote
 import aiohttp
+<<<<<<< Updated upstream
+=======
+import qrcode
+import operator
+>>>>>>> Stashed changes
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -20,6 +25,11 @@ if not TOKEN:
 ADMIN_CODE = os.getenv('ADMIN_CODE')
 if not ADMIN_CODE:
     raise ValueError("Не указан код администратора в файле .env (ADMIN_CODE)")
+
+# Получаем код user_plus из .env
+USER_PLUS_CODE = os.getenv('USER_PLUS_CODE')
+if not USER_PLUS_CODE:
+    raise ValueError("Не указан код привилегированного пользователя в файле .env (USER_PLUS_CODE)")
 
 # Константы для ограничений
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -36,10 +46,35 @@ DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
 TEMP_DIR = os.path.join(BOT_DIR, 'temp')
 LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
+<<<<<<< Updated upstream
 # Создаем директории если их нет
 for directory in [TEMP_DIR, LOG_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
+=======
+# Добавим константы для ролей
+class UserRole:
+    ADMIN = "admin"
+    USER_PLUS = "user_plus"
+    USER = "user"
+
+# Добавим константы для операторов
+OPERATORS = {
+    '+': operator.add,
+    '-': operator.sub,
+    '*': operator.mul
+}
+
+def ensure_directories():
+    """Создание необходимых директорий с обработкой ошибок"""
+    for directory in [TEMP_DIR, LOG_DIR]:
+        try:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+        except Exception as e:
+            print(f"Ошибка при создании директории {directory}: {e}")
+            sys.exit(1)
+>>>>>>> Stashed changes
 
 def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
@@ -58,18 +93,35 @@ def setup_database():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Создаем таблицу users если её нет
+    # Создаем таблицу users с полем role вместо is_admin
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             is_verified BOOLEAN DEFAULT FALSE,
-            is_admin BOOLEAN DEFAULT FALSE,
+            role TEXT DEFAULT 'user',
             usage_count INTEGER DEFAULT 0,
             merged_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # Миграция данных со старой структуры на новую
+    try:
+        # Проверяем существование старого столбца is_admin
+        c.execute('SELECT is_admin FROM users LIMIT 1')
+        # Если столбец существует, мигрируем данные
+        c.execute('''
+            UPDATE users 
+            SET role = CASE 
+                WHEN is_admin = 1 THEN 'admin'
+                ELSE 'user'
+            END
+        ''')
+        # Удаляем старый столбец
+        c.execute('ALTER TABLE users DROP COLUMN is_admin')
+    except sqlite3.OperationalError:
+        pass  # Столбец уже удален или не существует
     
     # Создаем таблицу для статуса бота если её нет
     c.execute('''
@@ -116,26 +168,47 @@ def is_admin(user_id):
     """Проверка прав администратора"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+    c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
     result = c.fetchone()
     conn.close()
-    return result[0] if result else False
+    return result[0] == UserRole.ADMIN if result else False
 
-def verify_user(user_id, username):
+def verify_user(user_id, username, role=UserRole.USER):
     """Верификация пользователя в базе данных"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+<<<<<<< Updated upstream
     # Проверяем, существует ли пользователь и является ли он админом
     c.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
+=======
+    # Проверяем существующие данные пользователя
+    c.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
+>>>>>>> Stashed changes
     result = c.fetchone()
     is_admin_status = result[0] if result else False
     
+<<<<<<< Updated upstream
     # Обновляем или добавляем пользователя, сохраняя статус админа
     c.execute('''
         INSERT OR REPLACE INTO users (user_id, username, is_verified, is_admin)
         VALUES (?, ?, TRUE, ?)
     ''', (user_id, username, is_admin_status))
+=======
+    if result:
+        existing_role, usage_count, merged_count, qr_count = result
+        # Не понижаем роль существующего пользователя
+        if role == UserRole.USER:
+            role = existing_role
+    else:
+        usage_count, merged_count, qr_count = 0, 0, 0
+    
+    c.execute('''
+        INSERT OR REPLACE INTO users 
+        (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
+        VALUES (?, ?, TRUE, ?, ?, ?, ?)
+    ''', (user_id, username, role, usage_count, merged_count, qr_count))
+>>>>>>> Stashed changes
     
     conn.commit()
     conn.close()
@@ -174,64 +247,94 @@ def get_menu_keyboard(user_id):
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_bot_enabled() and not is_admin(update.effective_user.id):
-        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
-        return ConversationHandler.END
-    
     user_id = update.effective_user.id
+    username = update.effective_user.username
     
-    # Проверяем команду на код администратора
-    message_text = update.message.text.strip()
-    if message_text.startswith('/start admin'):
-        admin_code = message_text.split('admin')[-1].strip()
-        if admin_code == ADMIN_CODE:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('''
-                INSERT OR REPLACE INTO users (user_id, username, is_verified, is_admin)
-                VALUES (?, ?, TRUE, TRUE)
-            ''', (user_id, update.effective_user.username))
-            conn.commit()
-            conn.close()
-            await update.message.reply_text("Вы успешно стали администратором!")
-            await show_menu(update, context)
-            return MENU
+    # Проверяем аргументы команды
+    args = context.args
+    if args:
+        command = args[0]
+        
+        # Проверяем на admin код
+        if command.startswith('admin'):
+            code = command[5:]  # Получаем код после 'admin'
+            if code == ADMIN_CODE:
+                verify_user(user_id, username, UserRole.ADMIN)
+                await update.message.reply_text("Вы успешно авторизованы как администратор! 👑")
+                return await show_menu(update, context)
+            else:
+                await update.message.reply_text("❌ Неверный код администратора.")
+                return MENU
+                
+        # Проверяем на user_plus код
+        elif command.startswith('user_plus'):
+            code = command[9:]  # Получаем код после 'user_plus'
+            user_plus_code = os.getenv('USER_PLUS_CODE')
+            if user_plus_code and code == user_plus_code:
+                verify_user(user_id, username, UserRole.USER_PLUS)
+                await update.message.reply_text("Вы успешно авторизованы как привилегированный пользователь! ⭐")
+                return await show_menu(update, context)
+            else:
+                await update.message.reply_text("❌ Неверный код привилегированного пользователя.")
+                return MENU
     
     # Проверяем, верифицирован ли пользователь
-    if is_user_verified(user_id):
-        await show_menu(update, context)
-        return MENU
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT is_verified FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
     
-    # Генерируем капчу
-    captcha_question, captcha_answer = generate_captcha()
-    context.user_data['captcha_answer'] = captcha_answer
+    if result and result[0]:
+        return await show_menu(update, context)
     
+    # Если пользователь не верифицирован, отправляем капчу
+    return await send_captcha(update, context)
+
+async def send_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправка капчи пользователю"""
+    # Генерируем случайные числа и оператор
+    num1 = random.randint(1, 10)
+    num2 = random.randint(1, 10)
+    op = random.choice(list(OPERATORS.keys()))
+    
+    # Вычисляем правильный ответ
+    correct_answer = OPERATORS[op](num1, num2)
+    
+    # Сохраняем ответ в контексте пользователя
+    context.user_data['captcha_answer'] = correct_answer
+    
+    # Отправляем капчу пользователю
     await update.message.reply_text(
-        f"Добро пожаловать! Для начала работы, пожалуйста, решите простой пример:\n\n{captcha_question}"
+        f"Для верификации, пожалуйста, решите пример:\n"
+        f"{num1} {op} {num2} = ?"
     )
+    
     return CAPTCHA
 
 async def check_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_bot_enabled() and not is_admin(update.effective_user.id):
-        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
-        return ConversationHandler.END
-    
-    user_answer = update.message.text.strip()
-    correct_answer = context.user_data.get('captcha_answer')
-    
-    if user_answer == correct_answer:
-        # Верифицируем пользователя
-        verify_user(update.effective_user.id, update.effective_user.username)
-        await show_menu(update, context)
-        return MENU
-    else:
-        # Генерируем новую капчу
-        captcha_question, captcha_answer = generate_captcha()
-        context.user_data['captcha_answer'] = captcha_answer
-        await update.message.reply_text(
-            f"Неверно! Попробуйте еще раз:\n\n{captcha_question}"
-        )
-        return CAPTCHA
+    """Проверка ответа на капчу"""
+    try:
+        user_answer = int(update.message.text)
+        correct_answer = context.user_data.get('captcha_answer')
+        
+        if user_answer == correct_answer:
+            # Верифицируем пользователя
+            verify_user(
+                update.effective_user.id,
+                update.effective_user.username,
+                UserRole.USER
+            )
+            await update.message.reply_text("Верификация успешно пройдена!")
+            return await show_menu(update, context)
+        else:
+            # Отправляем новую капчу
+            await update.message.reply_text("Неверный ответ. Попробуйте еще раз.")
+            return await send_captcha(update, context)
+            
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, введите число.")
+        return await send_captcha(update, context)
 
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -392,8 +495,8 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SETTINGS
 
 async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("У вас нет доступа к этой функции.")
+    if not check_admin_rights(update.effective_user.id):
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         await show_menu(update, context)
         return MENU
     
@@ -424,8 +527,8 @@ async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TY
     return TECH_COMMANDS
 
 async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("У вас нет доступа к этой функции.")
+    if not check_admin_rights(update.effective_user.id):
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         await show_menu(update, context)
         return MENU
     
@@ -757,7 +860,12 @@ def get_all_users():
     """Получение списка всех пользователей"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+<<<<<<< Updated upstream
     c.execute('SELECT user_id, username, is_verified, is_admin, usage_count FROM users')
+=======
+    c.execute('''SELECT user_id, username, is_verified, role, 
+                 usage_count, merged_count, qr_count FROM users''')
+>>>>>>> Stashed changes
     users = c.fetchall()
     conn.close()
     return users
@@ -841,6 +949,199 @@ def increment_merge_count(user_id):
     conn.commit()
     conn.close()
 
+<<<<<<< Updated upstream
+=======
+async def process_qr_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    if text == "Назад":
+        await show_menu(update, context)
+        return MENU
+    
+    qr_types = {
+        '🔗 Ссылка': ('Отправьте URL:', 'URL'),
+        '📝 Текст': ('Отправьте текст:', 'TEXT'),
+        '📧 Электронная почта': ('Отправьте email и тему (через пробел):', 'EMAIL'),
+        '📍 Местоположение': ('Отправьте координаты (широта пробел долгота):', 'GEO'),
+        '📞 Телефон': ('Отправьте номер телефона:', 'TEL'),
+        '✉️ СМС': ('Отправьте номер телефона и текст (через пробел):', 'SMS'),
+        '📱 WhatsApp': ('Отправьте номер WhatsApp и сообщение (через пробел):', 'WHATSAPP'),
+        '📶 Wi-Fi': ('Отправьте SSID и пароль (через пробел):', 'WIFI'),
+        '👤 Визитка': ('Отправьте данные в формате: ФИО Телефон Email Компания Должность', 'VCARD')
+    }
+    
+    if text in qr_types:
+        context.user_data['qr_type'] = qr_types[text][1]
+        keyboard = ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+        await update.message.reply_text(qr_types[text][0], reply_markup=keyboard)
+        return QR_DATA
+    
+    await update.message.reply_text("Пожалуйста, выберите тип QR-кода из меню.")
+    return QR_TYPE
+
+async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    temp_filename = None
+    try:
+        if update.message.text == "Назад":
+            await update.message.reply_text(
+                "Выберите тип QR-кода:",
+                reply_markup=get_qr_type_keyboard()
+            )
+            return QR_TYPE
+        
+        try:
+            qr_type = context.user_data.get('qr_type')
+            data = update.message.text.strip()
+            
+            # Формируем содержимое QR-кода в зависимости от типа
+            if qr_type == 'URL':
+                qr_content = data if data.startswith(('http://', 'https://')) else f'https://{data}'
+            elif qr_type == 'TEXT':
+                qr_content = data
+            elif qr_type == 'EMAIL':
+                email, *subject = data.split()
+                qr_content = f'mailto:{email}?subject={"+".join(subject)}'
+            elif qr_type == 'GEO':
+                lat, lon = data.split()
+                qr_content = f'geo:{lat},{lon}'
+            elif qr_type == 'TEL':
+                qr_content = f'tel:{data.replace(" ", "")}'
+            elif qr_type == 'SMS':
+                phone, *message = data.split()
+                qr_content = f'smsto:{phone}:{" ".join(message)}'
+            elif qr_type == 'WHATSAPP':
+                phone, *message = data.split()
+                qr_content = f'whatsapp://send?phone={phone.replace("+", "")}&text={"+".join(message)}'
+            elif qr_type == 'WIFI':
+                ssid, password = data.split(maxsplit=1)
+                qr_content = f'WIFI:S:{ssid};T:WPA;P:{password};;'
+            elif qr_type == 'VCARD':
+                name, phone, email, company, title = data.split(maxsplit=4)
+                qr_content = f'BEGIN:VCARD\nVERSION:3.0\nN:{name}\nTEL:{phone}\nEMAIL:{email}\nORG:{company}\nTITLE:{title}\nEND:VCARD'
+            
+            # Создаем QR-код
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(qr_content)
+            qr.make(fit=True)
+            
+            # Создаем изображение
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Создаем временный файл для QR-кода
+            temp_filename = os.path.join(TEMP_DIR, f'qr_{update.effective_user.id}.png')
+            
+            # Сохраняем изображение в файл
+            img.save(temp_filename)
+            
+            # Отправляем изображение
+            with open(temp_filename, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption="Ваш QR-код готов!",
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+            
+            # Увеличиваем счетчик созданных QR-кодов
+            increment_qr_count(update.effective_user.id)
+            
+            # Очищаем данные пользователя
+            context.user_data.clear()
+            
+            return MENU
+            
+        except Exception as e:
+            error_message = f"Ошибка при создании QR-кода: {str(e)}"
+            log_error(update.effective_user.id, error_message)
+            if temp_filename and os.path.exists(temp_filename):
+                os.remove(temp_filename)
+            await update.message.reply_text(
+                "Произошла ошибка. Пожалуйста, проверьте формат данных и попробуйте снова.",
+                reply_markup=get_qr_type_keyboard()
+            )
+            return QR_TYPE
+
+    except Exception as e:
+        error_message = f"Ошибка при создании QR-кода: {str(e)}"
+        log_error(update.effective_user.id, error_message)
+        if temp_filename and os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        await update.message.reply_text(
+            "Произошла ошибка. Пожалуйста, проверьте формат данных и попробуйте снова.",
+            reply_markup=get_qr_type_keyboard()
+        )
+        return QR_TYPE
+
+def increment_qr_count(user_id):
+    """Увеличение счетчика созданных QR-кодов"""
+    conn = safe_db_connect()
+    if not conn:
+        return
+    
+    try:
+        c = conn.cursor()
+        c.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
+    finally:
+        conn.close()
+
+def safe_db_connect():
+    """Безопасное подключение к базе данных"""
+    try:
+        return sqlite3.connect(DB_PATH)
+    except sqlite3.Error as e:
+        print(f"Ошибка подключения к базе данных: {e}")
+        return None
+
+def get_user_role(user_id):
+    """Получение роли пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else UserRole.USER
+
+def check_admin_rights(user_id):
+    """Проверка прав администратора"""
+    return get_user_role(user_id) == UserRole.ADMIN
+
+def check_user_plus_rights(user_id):
+    """Проверка прав привилегированного пользователя"""
+    role = get_user_role(user_id)
+    return role in [UserRole.ADMIN, UserRole.USER_PLUS]
+
+async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🔑 *Команды администратора:*
+
+📝 Основные команды:
+• `/start admin[код]` - Получить права администратора
+• `/start user_plus[код]` - Получить права привилегированного пользователя
+
+⚙️ Технические команды:
+• Включить/выключить бота
+• Перезапустить бота
+• Просмотр статистики
+
+👥 Управление пользователями:
+• Просмотр списка пользователей
+• Блокировка/разблокировка пользователей
+• Массовая рассылка сообщений
+
+💡 Примеры использования:
+• `/start adminYH8jRnO1Np8wVUZobJfwPIv`
+• `/start user_plusUj9kLmP2Qw3Er4Ty5`
+"""
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+>>>>>>> Stashed changes
 def main():
     # Создаем и настраиваем приложение
     application = Application.builder().token(TOKEN).build()
