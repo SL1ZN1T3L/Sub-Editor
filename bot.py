@@ -7,16 +7,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 import sys
 from datetime import datetime
 import base64
-from urllib.parse import urlparse, parse_qs, unquote
 import aiohttp
-<<<<<<< Updated upstream
-=======
 import qrcode
 import operator
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -41,7 +34,7 @@ ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пуст�
 DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолчанию
 
 # Состояния разговора
-CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE = range(9)
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA = range(11)
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,15 +42,6 @@ DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
 TEMP_DIR = os.path.join(BOT_DIR, 'temp')
 LOG_DIR = os.path.join(BOT_DIR, 'logs')
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-# Создаем директории если их нет
-for directory in [TEMP_DIR, LOG_DIR]:
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-=======
-=======
->>>>>>> Stashed changes
 # Добавим константы для ролей
 class UserRole:
     ADMIN = "admin"
@@ -80,7 +64,6 @@ def ensure_directories():
         except Exception as e:
             print(f"Ошибка при создании директории {directory}: {e}")
             sys.exit(1)
->>>>>>> Stashed changes
 
 def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
@@ -108,6 +91,7 @@ def setup_database():
             role TEXT DEFAULT 'user',
             usage_count INTEGER DEFAULT 0,
             merged_count INTEGER DEFAULT 0,
+            qr_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -155,7 +139,12 @@ def setup_database():
     try:
         c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
     except sqlite3.OperationalError:
-        # Колонка уже существует
+        pass
+    
+    # Добавляем поле qr_count, если его нет
+    try:
+        c.execute('ALTER TABLE users ADD COLUMN qr_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
         pass
     
     conn.commit()
@@ -184,26 +173,10 @@ def verify_user(user_id, username, role=UserRole.USER):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-<<<<<<< Updated upstream
-    # Проверяем, существует ли пользователь и является ли он админом
-    c.execute('SELECT is_admin FROM users WHERE user_id = ?', (user_id,))
-=======
     # Проверяем существующие данные пользователя
     c.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
     result = c.fetchone()
-    is_admin_status = result[0] if result else False
     
-<<<<<<< Updated upstream
-    # Обновляем или добавляем пользователя, сохраняя статус админа
-    c.execute('''
-        INSERT OR REPLACE INTO users (user_id, username, is_verified, is_admin)
-        VALUES (?, ?, TRUE, ?)
-    ''', (user_id, username, is_admin_status))
-=======
     if result:
         existing_role, usage_count, merged_count, qr_count = result
         # Не понижаем роль существующего пользователя
@@ -217,10 +190,6 @@ def verify_user(user_id, username, role=UserRole.USER):
         (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
         VALUES (?, ?, TRUE, ?, ?, ?, ?)
     ''', (user_id, username, role, usage_count, merged_count, qr_count))
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
     
     conn.commit()
     conn.close()
@@ -252,9 +221,21 @@ def get_menu_keyboard(user_id):
     """Создание клавиатуры с меню"""
     keyboard = [
         ['📤 Обработать файл'],
-        ['🔄 Объединить подписки'],
+        ['🔄 Объединить подписки', '📱 Создать QR-код'],
         ['ℹ️ Помощь', '📊 Статистика'],
         ['⚙️ Настройки']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_qr_type_keyboard():
+    """Создание клавиатуры выбора типа QR-кода"""
+    keyboard = [
+        ['🔗 Ссылка', '📝 Текст'],
+        ['📧 Электронная почта', '📍 Местоположение'],
+        ['📞 Телефон', '✉️ СМС'],
+        ['📱 WhatsApp', '📶 Wi-Fi'],
+        ['👤 Визитка'],
+        ['Назад']
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -400,10 +381,16 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
         return MERGE_FILES
+    elif text == '📱 Создать QR-код':
+        await update.message.reply_text(
+            "Выберите тип QR-кода:",
+            reply_markup=get_qr_type_keyboard()
+        )
+        return QR_TYPE
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
-            "🤖 Этот бот помогает обрабатывать файлы и объединять подписки.\n\n"
+            "🤖 Этот бот помогает обрабатывать файлы, объединять подписки и создавать QR-коды.\n\n"
             "📤 Обработка файлов:\n"
             f"1. Нажмите '📤 Обработать файл'\n"
             f"2. Отправьте файл со ссылками\n"
@@ -412,11 +399,16 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1. Нажмите '🔄 Объединить подписки'\n"
             "2. Отправьте ссылки на подписки по одной\n"
             "3. Нажмите 'Объединить' когда закончите\n\n"
+            "📱 Создание QR-кодов:\n"
+            "1. Нажмите '📱 Создать QR-код'\n"
+            "2. Выберите тип QR-кода\n"
+            "3. Введите необходимые данные\n\n"
             "⚙️ Настройки:\n"
             "- Настройка количества строк для обработки файлов\n\n"
             "📊 Статистика:\n"
             "- Количество обработанных файлов\n"
             "- Количество объединенных подписок\n"
+            "- Количество созданных QR-кодов\n"
             "- Текущее количество строк\n\n"
             "Поддерживаемые форматы файлов: .txt, .csv, .md\n"
             f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB\n"
@@ -425,10 +417,12 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT usage_count, merged_count FROM users WHERE user_id = ?', (update.effective_user.id,))
+        c.execute('SELECT usage_count, merged_count, qr_count FROM users WHERE user_id = ?', 
+                 (update.effective_user.id,))
         stats = c.fetchone()
         usage_count = stats[0] if stats else 0
         merged_count = stats[1] if stats else 0
+        qr_count = stats[2] if stats else 0
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         conn.close()
         
@@ -436,7 +430,8 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Ваша статистика:\n\n"
             f"1. Обработано файлов: {usage_count}\n"
             f"2. Объединено подписок: {merged_count}\n"
-            f"3. Выбранное количество строк: {lines_to_keep}"
+            f"3. Создано QR-кодов: {qr_count}\n"
+            f"4. Выбранное количество строк: {lines_to_keep}"
         )
     elif text == '⚙️ Настройки':
         return await settings_command(update, context)
@@ -558,7 +553,7 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text("В базе данных нет пользователей.")
             return OTHER_COMMANDS
         
-        verified_count = sum(1 for user in users if user[2])  # Подсчет верифицированных пользователей
+        verified_count = sum(1 for user in users if user[2])
         
         user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
         for user in users:
@@ -567,10 +562,13 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
                 f"Имя: {user[1] or 'Не указано'}\n"
                 f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
                 f"Админ: {'Да' if user[3] else 'Нет'}\n"
-                f"Обработано файлов: {user[4]}\n\n"
+                f"Обработано файлов: {user[4]}\n"
+                f"Объединено подписок: {user[5]}\n"
+                f"Создано QR-кодов: {user[6]}\n\n"
             )
         
-        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", parse_mode='Markdown')
+        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", 
+                                      parse_mode='Markdown')
         return USER_MANAGEMENT
     elif text == "Объединить подписки":
         await update.message.reply_text("Отправьте первый файл для объединения:")
@@ -829,9 +827,11 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=f,
-                    filename=f'{original_name}.html',  # Используем оригинальное имя
+                    filename=f'{original_name}.html',
                     caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
                 )
+            # Увеличиваем счетчик после успешной отправки
+            increment_usage_count(update.effective_user.id)
         finally:
             # Удаляем временный файл
             if os.path.exists(output_filename):
@@ -872,15 +872,8 @@ def get_all_users():
     """Получение списка всех пользователей"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-    c.execute('SELECT user_id, username, is_verified, is_admin, usage_count FROM users')
-=======
-=======
->>>>>>> Stashed changes
     c.execute('''SELECT user_id, username, is_verified, role, 
                  usage_count, merged_count, qr_count FROM users''')
->>>>>>> Stashed changes
     users = c.fetchall()
     conn.close()
     return users
@@ -964,8 +957,6 @@ def increment_merge_count(user_id):
     conn.commit()
     conn.close()
 
-<<<<<<< Updated upstream
-=======
 async def process_qr_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
@@ -1122,8 +1113,6 @@ def get_user_role(user_id):
     result = c.fetchone()
     conn.close()
     return result[0] if result else UserRole.USER
-<<<<<<< Updated upstream
-=======
 
 def check_admin_rights(user_id):
     """Проверка прав администратора"""
@@ -1224,102 +1213,10 @@ def main():
         print(f"Временные файлы: {TEMP_DIR}")
         print(f"Логи: {LOG_DIR}")
         application.run_polling()
->>>>>>> Stashed changes
 
-def check_admin_rights(user_id):
-    """Проверка прав администратора"""
-    return get_user_role(user_id) == UserRole.ADMIN
-
-def check_user_plus_rights(user_id):
-    """Проверка прав привилегированного пользователя"""
-    role = get_user_role(user_id)
-    return role in [UserRole.ADMIN, UserRole.USER_PLUS]
-
-async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """
-🔑 *Команды администратора:*
-
-📝 Основные команды:
-• `/start admin[код]` - Получить права администратора
-• `/start user_plus[код]` - Получить права привилегированного пользователя
-
-⚙️ Технические команды:
-• Включить/выключить бота
-• Перезапустить бота
-• Просмотр статистики
-
-👥 Управление пользователями:
-• Просмотр списка пользователей
-• Блокировка/разблокировка пользователей
-• Массовая рассылка сообщений
-
-💡 Примеры использования:
-• `/start adminYH8jRnO1Np8wVUZobJfwPIv`
-• `/start user_plusUj9kLmP2Qw3Er4Ty5`
-"""
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
->>>>>>> Stashed changes
-def main():
-    # Создаем и настраиваем приложение
-    application = Application.builder().token(TOKEN).build()
-    
-    # Создаем базу данных
-    setup_database()
-    
-    async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Восстановление меню для верифицированных пользователей"""
-        if is_user_verified(update.effective_user.id):
-            if not is_bot_enabled() and not is_admin(update.effective_user.id):
-                await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
-                return ConversationHandler.END
-            await show_menu(update, context)
-            return MENU
-        else:
-            await update.message.reply_text("Пожалуйста, используйте команду /start для начала работы.")
-            return ConversationHandler.END
-    
-    # Создаем обработчик разговора
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler('start', start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
-            MessageHandler(filters.Document.ALL, restore_menu)
-        ],
-        states={
-            CAPTCHA: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_captcha)],
-            MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND | filters.Document.ALL, handle_menu)
-            ],
-            PROCESS_FILE: [
-                MessageHandler(filters.Document.ALL, process_file),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)
-            ],
-            SETTINGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_settings)],
-            TECH_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_tech_commands)],
-            OTHER_COMMANDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_other_commands)],
-            USER_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_user_management)],
-            MERGE_FILES: [
-                MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, process_merge_command)
-            ],
-            SET_LINES: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_set_lines)]
-        },
-        fallbacks=[
-            CommandHandler('start', start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, restore_menu),
-            MessageHandler(filters.Document.ALL, restore_menu)
-        ]
-    )
-    
-    # Добавляем обработчик разговора
-    application.add_handler(conv_handler)
-    
-    # Запускаем бота
-    print(f"Бот запущен и готов к работе!")
-    print(f"База данных: {DB_PATH}")
-    print(f"Временные файлы: {TEMP_DIR}")
-    print(f"Логи: {LOG_DIR}")
-    application.run_polling()
+    except Exception as e:
+        print(f"Критическая ошибка при запуске бота: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main() 
