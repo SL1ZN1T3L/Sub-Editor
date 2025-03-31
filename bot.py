@@ -548,35 +548,7 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Введите сообщение для рассылки:")
         return OTHER_COMMANDS
     elif text == "Управление пользователями":
-        users = get_all_users()
-        if not users:
-            await update.message.reply_text("В базе данных нет пользователей.")
-            return OTHER_COMMANDS
-        
-        verified_count = sum(1 for user in users if user[2])
-        
-        user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
-        for user in users:
-            user_list += (
-                f"ID: `{user[0]}`\n"
-                f"Имя: {user[1] or 'Не указано'}\n"
-                f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
-                f"Админ: {'Да' if user[3] else 'Нет'}\n"
-                f"Обработано файлов: {user[4]}\n"
-                f"Объединено подписок: {user[5]}\n"
-                f"Создано QR-кодов: {user[6]}\n\n"
-            )
-        
-        await update.message.reply_text(user_list + "Введите ID пользователя для удаления:", 
-                                      parse_mode='Markdown')
-        return USER_MANAGEMENT
-    elif text == "Объединить подписки":
-        await update.message.reply_text("Отправьте первый файл для объединения:")
-        return MERGE_FILES
-    elif text == "Настройка количества строк":
-        current_lines = get_user_lines_to_keep(update.effective_user.id)
-        await update.message.reply_text(f"Текущее количество строк: {current_lines}\nВведите новое количество (от 1 до {MAX_LINKS}):")
-        return SET_LINES
+        return await show_users_list(update, context)
     else:
         # Отправляем сообщение всем пользователям
         conn = sqlite3.connect(DB_PATH)
@@ -597,22 +569,114 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         await settings_command(update, context)
         return SETTINGS
 
-async def process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = int(update.message.text)
-        if user_id == update.effective_user.id:
-            await update.message.reply_text("Вы не можете удалить себя.")
-            return USER_MANAGEMENT
-        
-        remove_user(user_id)
-        await update.message.reply_text(f"Пользователь с ID {user_id} удален.")
-    except ValueError:
-        await update.message.reply_text("Пожалуйста, введите корректный ID пользователя.")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка при удалении пользователя: {str(e)}")
+async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список пользователей с кнопками"""
+    users = get_all_users()
+    if not users:
+        await update.message.reply_text("В базе данных нет пользователей.")
+        return OTHER_COMMANDS
     
-    await settings_command(update, context)
-    return SETTINGS
+    verified_count = sum(1 for user in users if user[2])
+    
+    user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
+    
+    # Создаем клавиатуру с именами пользователей
+    keyboard = []
+    users_dict = {}
+    
+    for user in users:
+        user_id = user[0]
+        username = user[1] or f"ID: {user_id}"
+        role = 'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'
+        
+        user_list += (
+            f"ID: `{user[0]}`\n"
+            f"Имя: {user[1] or 'Не указано'}\n"
+            f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
+            f"Роль: {'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'}\n"           
+            f"Обработано файлов: {user[4]}\n"
+            f"Объединено подписок: {user[5]}\n"
+            f"Создано QR-кодов: {user[6]}\n\n"
+        )
+        
+        button_text = f"{username} ({role})"
+        keyboard.append([KeyboardButton(text=button_text)])
+        users_dict[button_text] = user_id
+
+    keyboard.append([KeyboardButton(text="Назад")])
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    # Сохраняем информацию о пользователях в контексте
+    context.user_data['users_info'] = users_dict
+    
+    await update.message.reply_text(
+        user_list + "\nВыберите пользователя для управления:", 
+        reply_markup=markup,
+        parse_mode='Markdown'
+    )
+    
+    return USER_MANAGEMENT
+
+async def process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+        
+    if text in ["Убрать из базы", "Выдать пользователя", "Выдать пользователя+", "Выдать админа"]:
+        user_id = context.user_data.get('selected_user_id')
+        if not user_id:
+            await update.message.reply_text("Сначала выберите пользователя.")
+            return USER_MANAGEMENT
+            
+        if text == "Убрать из базы":
+            if user_id == update.effective_user.id:
+                await update.message.reply_text("Вы не можете удалить себя.")
+            else:
+                try:
+                    remove_user(user_id)
+                    await update.message.reply_text("Пользователь удален.")
+                    return await show_users_list(update, context)
+                except Exception as e:
+                    await update.message.reply_text(f"Ошибка при удалении пользователя: {str(e)}")
+        else:
+            role = {
+                "Выдать пользователя": UserRole.USER,
+                "Выдать пользователя+": UserRole.USER_PLUS,
+                "Выдать админа": UserRole.ADMIN
+            }[text]
+            
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
+                conn.commit()
+                conn.close()
+                await update.message.reply_text("Роль пользователя обновлена.")
+                return await show_users_list(update, context)
+            except Exception as e:
+                await update.message.reply_text(f"Ошибка при обновлении роли: {str(e)}")
+    
+    elif text in context.user_data.get('users_info', {}):
+        # Пользователь выбран, показываем действия
+        user_id = context.user_data['users_info'][text]
+        context.user_data['selected_user_id'] = user_id
+        
+        keyboard = [
+            [KeyboardButton(text="Убрать из базы")],
+            [KeyboardButton(text="Выдать пользователя")],
+            [KeyboardButton(text="Выдать пользователя+")],
+            [KeyboardButton(text="Выдать админа")],
+            [KeyboardButton(text="Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(
+            f"Выберите действие для пользователя {text}:",
+            reply_markup=markup
+        )
+    
+    return USER_MANAGEMENT
 
 async def fetch_subscription(url):
     """Получение содержимого подписки по URL"""
