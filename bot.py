@@ -11,7 +11,6 @@ import aiohttp
 import qrcode
 import operator
 import hashlib
-import json
 from pathlib import Path
 
 # Загрузка переменных окружения
@@ -387,7 +386,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return MENU
         await update.message.reply_text(
             "Отправьте файл, для которого хотите создать временную ссылку.\n"
-            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB"
+            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024)} MB"
         )
         return TEMP_LINK
     elif text == 'ℹ️ Помощь':
@@ -455,7 +454,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     
     # Настройка строк доступна всем
-    keyboard.append([KeyboardButton(text="Настройка количества строк")])
+    keyboard.append([KeyboardButton(text="⚙️ Настройка количества строк")])
     
     # Дополнительные команды только для администраторов
     if is_admin(update.effective_user.id):
@@ -476,11 +475,16 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Назад":
         await show_menu(update, context)
         return MENU
-    elif text == "Настройка количества строк":
-        current_lines = get_user_lines_to_keep(update.effective_user.id)
+    elif text == "⚙️ Настройка количества строк":
+        keyboard = []
+        keyboard.append([KeyboardButton(text="👤 Изменить для себя")])
+        if is_admin(update.effective_user.id):
+            keyboard.append([KeyboardButton(text="🌐 Изменить для всех")])
+        keyboard.append([KeyboardButton(text="Назад")])
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(
-            f"Текущее количество строк: {current_lines}\n"
-            f"Введите новое количество (от 1 до {MAX_LINKS}):"
+            "Выберите действие:",
+            reply_markup=markup
         )
         return SET_LINES
     elif text == "Технические команды" and is_admin(update.effective_user.id):
@@ -509,6 +513,54 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Пожалуйста, выберите действие из меню.")
         return SETTINGS
+
+async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+    elif text == "👤 Изменить для себя":
+        current_lines = get_user_lines_to_keep(update.effective_user.id)
+        await update.message.reply_text(
+            f"Текущее количество строк: {current_lines}\n"
+            f"Введите новое количество (от 1 до {MAX_LINKS}):"
+        )
+        context.user_data['setting_type'] = 'personal'
+        return SET_LINES
+    elif text == "🌐 Изменить для всех" and is_admin(update.effective_user.id):
+        current_lines = get_lines_to_keep()
+        await update.message.reply_text(
+            f"Текущее глобальное количество строк: {current_lines}\n"
+            f"Введите новое количество (от 1 до {MAX_LINKS}):"
+        )
+        context.user_data['setting_type'] = 'global'
+        return SET_LINES
+    elif text.isdigit():
+        try:
+            lines = int(text)
+            if 1 <= lines <= MAX_LINKS:
+                setting_type = context.user_data.get('setting_type')
+                if setting_type == 'global' and is_admin(update.effective_user.id):
+                    # Админ меняет глобальные настройки
+                    set_lines_to_keep(lines)  # Обновляем глобальные настройки
+                    await update.message.reply_text(f"Глобальное количество строк установлено: {lines}")
+                elif setting_type == 'personal':
+                    # Пользователь меняет свои настройки
+                    set_user_lines_to_keep(update.effective_user.id, lines)
+                    await update.message.reply_text(f"Ваше персональное количество строк установлено: {lines}")
+            else:
+                await update.message.reply_text(f"Введите число от 1 до {MAX_LINKS}")
+                return SET_LINES
+        except ValueError:
+            await update.message.reply_text("Пожалуйста, введите корректное число.")
+            return SET_LINES
+        
+        await settings_command(update, context)
+        return SETTINGS
+    else:
+        await update.message.reply_text("Пожалуйста, выберите действие из меню.")
+        return SET_LINES
 
 async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_admin_rights(update.effective_user.id):
@@ -786,203 +838,6 @@ def merge_vless_subscriptions(subscriptions):
     
     # Объединяем все подписки в одну строку
     return '\n'.join(merged_configs)
-
-async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    
-    if text == "Назад":
-        await settings_command(update, context)
-        return SETTINGS
-        
-    try:
-        lines = int(text)
-        if 1 <= lines <= MAX_LINKS:
-            if is_admin(update.effective_user.id):
-                # Админ меняет глобальные настройки
-                set_lines_to_keep(lines)
-                await update.message.reply_text(f"Глобальное количество строк установлено: {lines}")
-            else:
-                # Обычный пользователь меняет свои настройки
-                set_user_lines_to_keep(update.effective_user.id, lines)
-                await update.message.reply_text(f"Ваше персональное количество строк установлено: {lines}")
-        else:
-            await update.message.reply_text(f"Введите число от 1 до {MAX_LINKS}")
-            return SET_LINES
-    except ValueError:
-        await update.message.reply_text("Пожалуйста, введите корректное число.")
-        return SET_LINES
-    
-    await settings_command(update, context)
-    return SETTINGS
-
-async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверяем верификацию пользователя и статус бота
-    if not is_bot_enabled() and not is_admin(update.effective_user.id):
-        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
-        return MENU
-    
-    if not is_user_verified(update.effective_user.id):
-        await update.message.reply_text(
-            "Пожалуйста, пройдите верификацию с помощью команды /start"
-        )
-        return MENU
-
-    try:
-        # Проверка наличия документа
-        if not update.message.document:
-            await update.message.reply_text("Пожалуйста, отправьте текстовый файл.")
-            return PROCESS_FILE
-
-        document = update.message.document
-        
-        # Проверка расширения файла
-        file_name = document.file_name.lower()
-        if not any(file_name.endswith(ext) for ext in ALLOWED_EXTENSIONS):
-            await update.message.reply_text(
-                f"Неподдерживаемый формат файла. Разрешены только: {', '.join(ALLOWED_EXTENSIONS)}"
-            )
-            return PROCESS_FILE
-
-        # Проверка размера файла
-        if document.file_size > MAX_FILE_SIZE:
-            await update.message.reply_text(
-                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024 * 1024)} MB"
-            )
-            return PROCESS_FILE
-
-        # Скачиваем файл
-        file = await context.bot.get_file(document.file_id)
-        downloaded_file = await file.download_as_bytearray()
-        
-        try:
-            content = downloaded_file.decode('utf-8')
-        except UnicodeDecodeError:
-            try:
-                content = downloaded_file.decode('windows-1251')
-            except UnicodeDecodeError:
-                await update.message.reply_text(
-                    "Ошибка при чтении файла. Убедитесь, что файл в кодировке UTF-8 или Windows-1251."
-                )
-                return PROCESS_FILE
-
-        # Получаем строки из файла
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
-        
-        # Проверка количества строк
-        if len(lines) > MAX_LINKS:
-            await update.message.reply_text(
-                f"Слишком много строк в файле. Максимально допустимо: {MAX_LINKS}"
-            )
-            return PROCESS_FILE
-
-        if not lines:
-            await update.message.reply_text(
-                "Файл пуст или не содержит текстовых строк."
-            )
-            return PROCESS_FILE
-
-        # Получаем количество строк для конкретного пользователя
-        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
-        
-        # Берем последние N строк
-        last_lines = lines[-lines_to_keep:]
-        
-        # Создаем имя выходного файла на основе оригинального имени
-        original_name = os.path.splitext(document.file_name)[0]  # Получаем имя без расширения
-        output_filename = os.path.join(TEMP_DIR, f'{original_name}_{update.effective_user.id}.html')
-        
-        try:
-            with open(output_filename, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(last_lines))
-            
-            # Отправляем файл
-            with open(output_filename, 'rb') as f:
-                await context.bot.send_document(
-                    chat_id=update.effective_chat.id,
-                    document=f,
-                    filename=f'{original_name}.html',
-                    caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
-                )
-            # Увеличиваем счетчик после успешной отправки
-            increment_usage_count(update.effective_user.id)
-        finally:
-            # Удаляем временный файл
-            if os.path.exists(output_filename):
-                os.remove(output_filename)
-        
-        # Возвращаемся в главное меню
-        await show_menu(update, context)
-        return MENU
-        
-    except Exception as e:
-        error_message = f"Произошла ошибка при обработке файла: {str(e)}"
-        log_error(update.effective_user.id, error_message)
-        print(f"Error for user {update.effective_user.id}: {error_message}")
-        await update.message.reply_text(
-            "Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова."
-        )
-        return PROCESS_FILE
-
-def get_user_lines_to_keep(user_id):
-    """Получение персонального количества строк для пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else DEFAULT_LINES_TO_KEEP
-
-def set_user_lines_to_keep(user_id, lines):
-    """Установка персонального количества строк для пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)', 
-              (user_id, lines))
-    conn.commit()
-    conn.close()
-
-def get_all_users():
-    """Получение списка всех пользователей"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''SELECT user_id, username, is_verified, role, 
-                 usage_count, merged_count, qr_count FROM users''')
-    users = c.fetchall()
-    conn.close()
-    return users
-
-def remove_user(user_id):
-    """Удаление пользователя из базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
-
-def get_lines_to_keep():
-    """Получение количества строк для сохранения"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else DEFAULT_LINES_TO_KEEP
-
-def set_lines_to_keep(lines):
-    """Установка количества строк для сохранения"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
-    conn.commit()
-    conn.close()
-
-def increment_usage_count(user_id):
-    """Увеличение счетчика использования бота"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
 
 async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "Объединить":
@@ -1308,7 +1163,7 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверка размера файла
         if document.file_size > MAX_FILE_SIZE:
             await update.message.reply_text(
-                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024 * 1024)} MB"
+                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024)} MB"
             )
             return TEMP_LINK
         
@@ -1407,6 +1262,183 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             "Произошла ошибка при создании временной ссылки. Пожалуйста, попробуйте снова."
         )
         return await show_menu(update, context)
+
+def get_user_lines_to_keep(user_id):
+    """Получение персонального количества строк для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else DEFAULT_LINES_TO_KEEP
+
+def set_user_lines_to_keep(user_id, lines):
+    """Установка персонального количества строк для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)', 
+              (user_id, lines))
+    conn.commit()
+    conn.close()
+
+def get_lines_to_keep():
+    """Получение количества строк для сохранения"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else DEFAULT_LINES_TO_KEEP
+
+def set_lines_to_keep(lines):
+    """Установка количества строк для сохранения"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    """Получение списка всех пользователей"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''SELECT user_id, username, is_verified, role, 
+                 usage_count, merged_count, qr_count FROM users''')
+    users = c.fetchall()
+    conn.close()
+    return users
+
+def remove_user(user_id):
+    """Удаление пользователя из базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка файла"""
+    # Проверяем верификацию пользователя и статус бота
+    if not is_bot_enabled() and not is_admin(update.effective_user.id):
+        await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
+        return MENU
+    
+    if not is_user_verified(update.effective_user.id):
+        await update.message.reply_text(
+            "Пожалуйста, пройдите верификацию с помощью команды /start"
+        )
+        return MENU
+
+    try:
+        # Проверка наличия документа
+        if not update.message.document:
+            await update.message.reply_text("Пожалуйста, отправьте текстовый файл.")
+            return PROCESS_FILE
+
+        document = update.message.document
+        
+        # Проверка расширения файла
+        file_name = document.file_name.lower()
+        if not any(file_name.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+            await update.message.reply_text(
+                f"Неподдерживаемый формат файла. Разрешены только: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+            return PROCESS_FILE
+
+        # Проверка размера файла
+        if document.file_size > MAX_FILE_SIZE:
+            await update.message.reply_text(
+                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024)} MB"
+            )
+            return PROCESS_FILE
+
+        # Скачиваем файл
+        file = await context.bot.get_file(document.file_id)
+        downloaded_file = await file.download_as_bytearray()
+        
+        try:
+            content = downloaded_file.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                content = downloaded_file.decode('windows-1251')
+            except UnicodeDecodeError:
+                await update.message.reply_text(
+                    "Ошибка при чтении файла. Убедитесь, что файл в кодировке UTF-8 или Windows-1251."
+                )
+                return PROCESS_FILE
+
+        # Получаем строки из файла
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        
+        # Проверка количества строк
+        if len(lines) > MAX_LINKS:
+            await update.message.reply_text(
+                f"Слишком много строк в файле. Максимально допустимо: {MAX_LINKS}"
+            )
+            return PROCESS_FILE
+
+        if not lines:
+            await update.message.reply_text(
+                "Файл пуст или не содержит текстовых строк."
+            )
+            return PROCESS_FILE
+
+        # Получаем количество строк для конкретного пользователя
+        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
+        
+        # Берем последние N строк
+        last_lines = lines[-lines_to_keep:]
+        
+        # Создаем имя выходного файла на основе оригинального имени
+        original_name = os.path.splitext(document.file_name)[0]  # Получаем имя без расширения
+        output_filename = os.path.join(TEMP_DIR, f'{original_name}_{update.effective_user.id}.html')
+        
+        try:
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(last_lines))
+            
+            # Отправляем файл
+            with open(output_filename, 'rb') as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename=f'{original_name}.html',
+                    caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
+                )
+            # Увеличиваем счетчик после успешной отправки
+            increment_usage_count(update.effective_user.id)
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(output_filename):
+                os.remove(output_filename)
+        
+        # Возвращаемся в главное меню
+        await show_menu(update, context)
+        return MENU
+        
+    except Exception as e:
+        error_message = f"Произошла ошибка при обработке файла: {str(e)}"
+        log_error(update.effective_user.id, error_message)
+        print(f"Error for user {update.effective_user.id}: {error_message}")
+        await update.message.reply_text(
+            "Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова."
+        )
+        return PROCESS_FILE
+
+def increment_usage_count(user_id):
+    """Увеличение счетчика обработанных файлов"""
+    conn = safe_db_connect()
+    if not conn:
+        return
+    
+    try:
+        c = conn.cursor()
+        c.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"Ошибка при обновлении счетчика обработанных файлов: {e}")
+    finally:
+        conn.close()
 
 def main():
     try:
