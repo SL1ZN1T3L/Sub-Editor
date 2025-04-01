@@ -476,17 +476,27 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_menu(update, context)
         return MENU
     elif text == "Настройка количества строк":
-        keyboard = []
-        keyboard.append([KeyboardButton(text="Изменить для себя")])
         if is_admin(update.effective_user.id):
+            # Для админов показываем выбор между личными и глобальными настройками
+            keyboard = []
+            keyboard.append([KeyboardButton(text="Изменить для себя")])
             keyboard.append([KeyboardButton(text="Изменить для всех")])
-        keyboard.append([KeyboardButton(text="Назад")])
-        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(
-            "Выберите действие:",
-            reply_markup=markup
-        )
-        return SET_LINES
+            keyboard.append([KeyboardButton(text="Назад")])
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.message.reply_text(
+                "Выберите действие:",
+                reply_markup=markup
+            )
+            return SET_LINES
+        else:
+            # Для обычных пользователей сразу запрашиваем количество строк
+            current_lines = get_user_lines_to_keep(update.effective_user.id)
+            await update.message.reply_text(
+                f"Текущее количество строк: {current_lines}\n"
+                f"Введите новое количество (от 1 до {MAX_LINKS}):"
+            )
+            context.user_data['setting_type'] = 'personal'
+            return SET_LINES
     elif text == "Технические команды" and is_admin(update.effective_user.id):
         markup = ReplyKeyboardMarkup(
             keyboard=[
