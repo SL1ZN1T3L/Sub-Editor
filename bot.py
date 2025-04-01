@@ -454,7 +454,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     
     # Настройка строк доступна всем
-    keyboard.append([KeyboardButton(text="⚙️ Настройка количества строк")])
+    keyboard.append([KeyboardButton(text="Настройка количества строк")])
     
     # Дополнительные команды только для администраторов
     if is_admin(update.effective_user.id):
@@ -475,11 +475,11 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Назад":
         await show_menu(update, context)
         return MENU
-    elif text == "⚙️ Настройка количества строк":
+    elif text == "Настройка количества строк":
         keyboard = []
-        keyboard.append([KeyboardButton(text="👤 Изменить для себя")])
+        keyboard.append([KeyboardButton(text="Изменить для себя")])
         if is_admin(update.effective_user.id):
-            keyboard.append([KeyboardButton(text="🌐 Изменить для всех")])
+            keyboard.append([KeyboardButton(text="Изменить для всех")])
         keyboard.append([KeyboardButton(text="Назад")])
         markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text(
@@ -520,7 +520,7 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Назад":
         await settings_command(update, context)
         return SETTINGS
-    elif text == "👤 Изменить для себя":
+    elif text == "Изменить для себя":
         current_lines = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
             f"Текущее количество строк: {current_lines}\n"
@@ -528,7 +528,7 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['setting_type'] = 'personal'
         return SET_LINES
-    elif text == "🌐 Изменить для всех" and is_admin(update.effective_user.id):
+    elif text == "Изменить для всех" and is_admin(update.effective_user.id):
         current_lines = get_lines_to_keep()
         await update.message.reply_text(
             f"Текущее глобальное количество строк: {current_lines}\n"
