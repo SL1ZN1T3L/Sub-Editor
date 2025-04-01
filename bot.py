@@ -5,11 +5,14 @@ from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 import aiohttp
 import qrcode
 import operator
+import hashlib
+import json
+from pathlib import Path
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -27,20 +30,26 @@ USER_PLUS_CODE = os.getenv('USER_PLUS_CODE')
 if not USER_PLUS_CODE:
     raise ValueError("Не указан код привилегированного пользователя в файле .env (USER_PLUS_CODE)")
 
+# Получаем домен для временных ссылок
+TEMP_LINK_DOMAIN = os.getenv('TEMP_LINK_DOMAIN', 'https://your-domain.com')
+
 # Константы для ограничений
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_FILE_SIZE = 10 * 1024  # 10 MB
 MAX_LINKS = 1000  # Максимальное количество ссылок в файле
 ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пустое расширение
 DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолчанию
+MAX_TEMP_LINK_HOURS = 24  # Максимальное время хранения файла в часах
 
 # Состояния разговора
-CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA = range(11)
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA, TEMP_LINK, TEMP_LINK_DURATION = range(13)
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
 TEMP_DIR = os.path.join(BOT_DIR, 'temp')
 LOG_DIR = os.path.join(BOT_DIR, 'logs')
+TEMP_LINKS_DIR = os.path.join(BOT_DIR, 'temp_links')
+TEMP_LINKS_DB = os.path.join(BOT_DIR, 'temp_links.db')
 
 # Добавим константы для ролей
 class UserRole:
@@ -57,7 +66,7 @@ OPERATORS = {
 
 def ensure_directories():
     """Создание необходимых директорий с обработкой ошибок"""
-    for directory in [TEMP_DIR, LOG_DIR]:
+    for directory in [TEMP_DIR, LOG_DIR, TEMP_LINKS_DIR]:
         try:
             if not os.path.exists(directory):
                 os.makedirs(directory)
@@ -77,7 +86,6 @@ def log_error(user_id, error_message):
         print(f"Ошибка при логировании: {str(e)}")
         print(f"[{timestamp}] User {user_id}: {error_message}")
 
-# Создание базы данных
 def setup_database():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -96,23 +104,6 @@ def setup_database():
         )
     ''')
     
-    # Миграция данных со старой структуры на новую
-    try:
-        # Проверяем существование старого столбца is_admin
-        c.execute('SELECT is_admin FROM users LIMIT 1')
-        # Если столбец существует, мигрируем данные
-        c.execute('''
-            UPDATE users 
-            SET role = CASE 
-                WHEN is_admin = 1 THEN 'admin'
-                ELSE 'user'
-            END
-        ''')
-        # Удаляем старый столбец
-        c.execute('ALTER TABLE users DROP COLUMN is_admin')
-    except sqlite3.OperationalError:
-        pass  # Столбец уже удален или не существует
-    
     # Создаем таблицу для статуса бота если её нет
     c.execute('''
         CREATE TABLE IF NOT EXISTS bot_status (
@@ -129,23 +120,21 @@ def setup_database():
             lines_to_keep INTEGER DEFAULT 10
         )
     ''')
+
+    # Создаем таблицу для временных ссылок
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS temp_links (
+            link_id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     
     # Проверяем, есть ли запись о статусе бота
     c.execute('SELECT COUNT(*) FROM bot_status')
     if c.fetchone()[0] == 0:
         c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
-    
-    # Добавляем поле merged_count, если его нет
-    try:
-        c.execute('ALTER TABLE users ADD COLUMN merged_count INTEGER DEFAULT 0')
-    except sqlite3.OperationalError:
-        pass
-    
-    # Добавляем поле qr_count, если его нет
-    try:
-        c.execute('ALTER TABLE users ADD COLUMN qr_count INTEGER DEFAULT 0')
-    except sqlite3.OperationalError:
-        pass
     
     conn.commit()
     conn.close()
@@ -225,6 +214,11 @@ def get_menu_keyboard(user_id):
         ['ℹ️ Помощь', '📊 Статистика'],
         ['⚙️ Настройки']
     ]
+    
+    # Добавляем кнопку временных ссылок только для User+ и Админов
+    if check_user_plus_rights(user_id):
+        keyboard.insert(2, ['🔗 Создать временную ссылку'])
+    
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_qr_type_keyboard():
@@ -387,9 +381,18 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_qr_type_keyboard()
         )
         return QR_TYPE
+    elif text == '🔗 Создать временную ссылку':
+        if not check_user_plus_rights(update.effective_user.id):
+            await update.message.reply_text("У вас нет прав для использования этой функции.")
+            return MENU
+        await update.message.reply_text(
+            "Отправьте файл, для которого хотите создать временную ссылку.\n"
+            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB"
+        )
+        return TEMP_LINK
     elif text == 'ℹ️ Помощь':
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
-        await update.message.reply_text(
+        help_text = (
             "🤖 Этот бот помогает обрабатывать файлы, объединять подписки и создавать QR-коды.\n\n"
             "📤 Обработка файлов:\n"
             f"1. Нажмите '📤 Обработать файл'\n"
@@ -403,6 +406,11 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "1. Нажмите '📱 Создать QR-код'\n"
             "2. Выберите тип QR-кода\n"
             "3. Введите необходимые данные\n\n"
+            "🔗 Создание временных ссылок (только для User+ и Админов):\n"
+            "1. Нажмите '🔗 Создать временную ссылку'\n"
+            "2. Отправьте файл\n"
+            "3. Выберите срок хранения\n"
+            "4. Получите ссылку на скачивание\n\n"
             "⚙️ Настройки:\n"
             "- Настройка количества строк для обработки файлов\n\n"
             "📊 Статистика:\n"
@@ -414,6 +422,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB\n"
             f"Максимальное количество строк: {MAX_LINKS}"
         )
+        await update.message.reply_text(help_text)
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -1211,6 +1220,194 @@ async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
+def generate_temp_link_id():
+    """Генерация уникального ID для временной ссылки"""
+    return hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:8]
+
+def save_temp_link(file_path, duration_hours):
+    """Сохранение информации о временной ссылке"""
+    link_id = generate_temp_link_id()
+    expires_at = datetime.now() + timedelta(hours=duration_hours)
+    
+    conn = sqlite3.connect(DB_PATH)  # Используем основную БД
+    c = conn.cursor()
+    
+    c.execute('''
+        INSERT INTO temp_links (link_id, file_path, expires_at)
+        VALUES (?, ?, ?)
+    ''', (link_id, file_path, expires_at))
+    
+    conn.commit()
+    conn.close()
+    
+    return link_id
+
+def get_temp_link_info(link_id):
+    """Получение информации о временной ссылке"""
+    conn = sqlite3.connect(DB_PATH)  # Используем основную БД
+    c = conn.cursor()
+    
+    c.execute('''
+        SELECT file_path, expires_at
+        FROM temp_links
+        WHERE link_id = ? AND expires_at > datetime('now')
+    ''', (link_id,))
+    
+    result = c.fetchone()
+    conn.close()
+    
+    return result
+
+def cleanup_expired_links():
+    """Очистка истекших временных ссылок"""
+    conn = sqlite3.connect(DB_PATH)  # Используем основную БД
+    c = conn.cursor()
+    
+    # Получаем список истекших ссылок
+    c.execute('''
+        SELECT file_path
+        FROM temp_links
+        WHERE expires_at <= datetime('now')
+    ''')
+    
+    expired_files = c.fetchall()
+    
+    # Удаляем файлы
+    for file_path in expired_files:
+        try:
+            if os.path.exists(file_path[0]):
+                os.remove(file_path[0])
+        except Exception as e:
+            print(f"Ошибка при удалении файла {file_path[0]}: {e}")
+    
+    # Удаляем записи из базы данных
+    c.execute('''
+        DELETE FROM temp_links
+        WHERE expires_at <= datetime('now')
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка создания временной ссылки"""
+    if not check_user_plus_rights(update.effective_user.id):
+        await update.message.reply_text("У вас нет прав для использования этой функции.")
+        return await show_menu(update, context)
+    
+    if update.message.text == "🔗 Создать временную ссылку":
+        await update.message.reply_text(
+            "Отправьте файл, для которого хотите создать временную ссылку.\n"
+            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB"
+        )
+        return TEMP_LINK
+    
+    if update.message.document:
+        document = update.message.document
+        
+        # Проверка размера файла
+        if document.file_size > MAX_FILE_SIZE:
+            await update.message.reply_text(
+                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024 * 1024)} MB"
+            )
+            return TEMP_LINK
+        
+        # Скачиваем файл
+        file = await context.bot.get_file(document.file_id)
+        downloaded_file = await file.download_as_bytearray()
+        
+        # Создаем уникальное имя файла
+        file_name = f"{document.file_name}_{update.effective_user.id}_{int(datetime.now().timestamp())}"
+        file_path = os.path.join(TEMP_LINKS_DIR, file_name)
+        
+        # Сохраняем файл
+        with open(file_path, 'wb') as f:
+            f.write(downloaded_file)
+        
+        # Сохраняем путь к файлу в контексте
+        context.user_data['temp_file_path'] = file_path
+        
+        # Запрашиваем срок хранения
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['Назад']
+        ]
+        await update.message.reply_text(
+            "Выберите срок хранения файла:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return TEMP_LINK_DURATION
+    
+    await update.message.reply_text("Пожалуйста, отправьте файл.")
+    return TEMP_LINK
+
+async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора срока хранения временной ссылки"""
+    if update.message.text == "Назад":
+        # Удаляем сохраненный файл
+        if 'temp_file_path' in context.user_data:
+            try:
+                if os.path.exists(context.user_data['temp_file_path']):
+                    os.remove(context.user_data['temp_file_path'])
+            except Exception as e:
+                print(f"Ошибка при удалении файла: {e}")
+        context.user_data.clear()
+        return await show_menu(update, context)
+    
+    try:
+        # Определяем срок хранения
+        duration_map = {
+            '1 час': 1,
+            '6 часов': 6,
+            '12 часов': 12,
+            '24 часа': 24
+        }
+        
+        if update.message.text not in duration_map:
+            await update.message.reply_text("Пожалуйста, выберите срок из предложенных вариантов.")
+            return TEMP_LINK_DURATION
+        
+        duration_hours = duration_map[update.message.text]
+        file_path = context.user_data.get('temp_file_path')
+        
+        if not file_path or not os.path.exists(file_path):
+            await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте снова.")
+            return await show_menu(update, context)
+        
+        # Создаем временную ссылку
+        link_id = save_temp_link(file_path, duration_hours)
+        temp_link = f"{TEMP_LINK_DOMAIN}/download/{link_id}"
+        
+        # Отправляем ссылку
+        await update.message.reply_text(
+            f"Ваша временная ссылка (действует {duration_hours} часов):\n\n"
+            f"`{temp_link}`",
+            parse_mode='Markdown'
+        )
+        
+        # Очищаем данные
+        context.user_data.clear()
+        return await show_menu(update, context)
+        
+    except Exception as e:
+        error_message = f"Ошибка при создании временной ссылки: {str(e)}"
+        log_error(update.effective_user.id, error_message)
+        
+        # Удаляем сохраненный файл
+        if 'temp_file_path' in context.user_data:
+            try:
+                if os.path.exists(context.user_data['temp_file_path']):
+                    os.remove(context.user_data['temp_file_path'])
+            except Exception as e:
+                print(f"Ошибка при удалении файла: {e}")
+        
+        context.user_data.clear()
+        await update.message.reply_text(
+            "Произошла ошибка при создании временной ссылки. Пожалуйста, попробуйте снова."
+        )
+        return await show_menu(update, context)
+
 def main():
     try:
         # Создаем необходимые директории
@@ -1221,6 +1418,9 @@ def main():
         
         # Создаем базу данных
         setup_database()
+        
+        # Запускаем очистку истекших ссылок
+        cleanup_expired_links()
         
         async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Восстановление меню для верифицированных пользователей"""
@@ -1259,7 +1459,9 @@ def main():
                 ],
                 SET_LINES: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_set_lines)],
                 QR_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_type)],
-                QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)]
+                QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)],
+                TEMP_LINK: [MessageHandler(filters.Document.ALL, process_temp_link)],
+                TEMP_LINK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temp_link_duration)]
             },
             fallbacks=[
                 CommandHandler('start', start),
