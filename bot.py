@@ -149,8 +149,10 @@ def setup_database():
         c.execute('''
             CREATE TABLE IF NOT EXISTS temp_links (
                 link_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
                 expires_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
         logger.info("Таблица temp_links создана или уже существует")
@@ -1264,19 +1266,55 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("У вас нет прав для использования этой функции.")
         return await show_menu(update, context)
     
-    # Создаем клавиатуру с выбором срока хранения
-    keyboard = [
-        ['1 час', '6 часов'],
-        ['12 часов', '24 часа'],
-        ['Назад']
-    ]
-    
-    await update.message.reply_text(
-        "Выберите срок хранения временного хранилища:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
-    
-    return TEMP_LINK_DURATION
+    try:
+        # Проверяем наличие активного хранилища
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            SELECT link_id, expires_at 
+            FROM temp_links 
+            WHERE user_id = ? AND expires_at > datetime('now')
+            ORDER BY created_at DESC
+            LIMIT 1
+        ''', (update.effective_user.id,))
+        active_storage = c.fetchone()
+        
+        if active_storage:
+            link_id, expires_at = active_storage
+            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+            await update.message.reply_text(
+                f"У вас уже есть активное временное хранилище!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Срок действия до: {expires_at}\n\n"
+                f"Вы можете продолжать использовать это хранилище или дождаться окончания его срока действия для создания нового.",
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+        
+        # Создаем клавиатуру с выбором срока хранения
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['Назад']
+        ]
+        
+        await update.message.reply_text(
+            "Выберите срок хранения временного хранилища:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        
+        return TEMP_LINK_DURATION
+        
+    except Exception as e:
+        logger.error(f"Ошибка при проверке хранилища: {str(e)}")
+        await update.message.reply_text(
+            "Произошла ошибка при проверке хранилища. Попробуйте позже.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка выбора срока хранения временного хранилища"""
@@ -1298,50 +1336,63 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         )
         return TEMP_LINK_DURATION
     
-    duration_hours = duration_map[update.message.text]
-    
     try:
+        # Проверяем еще раз наличие активного хранилища
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            SELECT link_id, expires_at 
+            FROM temp_links 
+            WHERE user_id = ? AND expires_at > datetime('now')
+            ORDER BY created_at DESC
+            LIMIT 1
+        ''', (update.effective_user.id,))
+        active_storage = c.fetchone()
+        
+        if active_storage:
+            link_id, expires_at = active_storage
+            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+            await update.message.reply_text(
+                f"У вас уже есть активное временное хранилище!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Срок действия до: {expires_at}\n\n"
+                f"Вы можете продолжать использовать это хранилище или дождаться окончания его срока действия для создания нового.",
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+            
+        duration_hours = duration_map[update.message.text]
+        
         # Создаем временное хранилище
         link_id = generate_temp_link_id()
         expires_at = datetime.now() + timedelta(hours=duration_hours)
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        # Создаем запись о временном хранилище
+        c.execute('''
+            INSERT INTO temp_links (link_id, expires_at, user_id, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+        ''', (link_id, expires_at, update.effective_user.id))
         
-        try:
-            # Создаем запись о временном хранилище
-            c.execute('''
-                INSERT INTO temp_links (link_id, expires_at)
-                VALUES (?, ?)
-            ''', (link_id, expires_at))
-            
-            conn.commit()
-            
-            # Формируем URL для доступа к хранилищу
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
-            
-            # Отправляем пользователю ссылку
-            await update.message.reply_text(
-                f"✅ Временное хранилище создано!\n\n"
-                f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия: {duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}\n\n"
-                f"⚠️ Хранилище будет доступно до {expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                f"Вы можете загружать файлы через веб-интерфейс.",
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            
-            return MENU
-            
-        except sqlite3.Error as e:
-            conn.rollback()
-            error_message = f"Ошибка базы данных при создании временного хранилища: {str(e)}"
-            logger.error(error_message)
-            raise
-            
-        finally:
-            conn.close()
+        conn.commit()
+        
+        # Формируем URL для доступа к хранилищу
+        storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+        
+        # Отправляем пользователю ссылку
+        await update.message.reply_text(
+            f"✅ Временное хранилище создано!\n\n"
+            f"🔗 Ссылка: {storage_url}\n"
+            f"⏱ Срок действия: {duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}\n\n"
+            f"⚠️ Хранилище будет доступно до {expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Вы можете загружать файлы через веб-интерфейс.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        
+        return MENU
             
     except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
         error_message = f"Ошибка при создании временного хранилища: {str(e)}"
         logger.error(error_message)
         
@@ -1350,6 +1401,10 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             reply_markup=get_menu_keyboard(update.effective_user.id)
         )
         return MENU
+        
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 def get_user_lines_to_keep(user_id):
     """Получение персонального количества строк для пользователя"""
@@ -1525,6 +1580,23 @@ def increment_usage_count(user_id):
         conn.commit()
     except sqlite3.Error as e:
         print(f"Ошибка при обновлении счетчика обработанных файлов: {e}")
+    finally:
+        conn.close()
+
+def get_user_active_storage(user_id):
+    """Получение активного хранилища пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('''
+            SELECT link_id, expires_at 
+            FROM temp_links 
+            WHERE user_id = ? AND expires_at > datetime('now')
+            ORDER BY created_at DESC
+            LIMIT 1
+        ''', (user_id,))
+        result = c.fetchone()
+        return result if result else None
     finally:
         conn.close()
 

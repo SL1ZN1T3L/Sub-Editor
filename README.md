@@ -20,8 +20,9 @@
 ## Требования
 
 - Python 3.7+
+- Flask==2.0.1
 - python-telegram-bot==20.7
-- python-dotenv==1.0.0
+- python-dotenv==1.0.1
 - aiohttp==3.9.3
 - qrcode==7.4.2
 - pillow==10.2.0

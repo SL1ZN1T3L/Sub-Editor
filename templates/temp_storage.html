@@ -5,13 +5,191 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Временное хранилище</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        .progress {
+        .storage-info {
+            margin-bottom: 10px;
+        }
+        .storage-progress {
+            margin-bottom: 10px;
+        }
+        .storage-progress .progress {
             height: 25px;
+            background-color: #f5f5f5;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+            position: relative;
+        }
+        .storage-progress .progress-bar {
+            font-size: 14px;
+            line-height: 25px;
+            transition: all 0.3s ease;
+            text-shadow: 1px 1px 1px rgba(0,0,0,0.3);
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            text-align: center;
+            position: relative;
+            color: white;
+            font-weight: bold;
+            background: linear-gradient(to right, 
+                #28a745 0%, 
+                #28a745 15%, 
+                #4ca743 20%,
+                #70a742 25%,
+                #94a740 30%,
+                #b8a73f 35%,
+                #dca73d 40%,
+                #ffc107 45%,
+                #ff9f07 50%,
+                #ff7d07 55%,
+                #ff5b07 60%,
+                #ff3907 65%,
+                #dc3545 70%,
+                #dc3545 100%
+            );
+            background-size: var(--bg-size, 100%) 100%;
+            background-position: 0 0;
+        }
+        .storage-progress .progress-bar[aria-valuenow="0"],
+        .storage-progress .progress-bar[aria-valuenow="0.0"] {
+            min-width: 0;
+            padding: 0;
+        }
+        .storage-progress .progress-bar[aria-valuenow^="0"],
+        .storage-progress .progress-bar[aria-valuenow^="1"],
+        .storage-progress .progress-bar[aria-valuenow^="2"],
+        .storage-progress .progress-bar[aria-valuenow^="3"] {
+            background-color: #28a745;
+        }
+        .storage-progress .progress-bar[aria-valuenow^="4"],
+        .storage-progress .progress-bar[aria-valuenow^="5"],
+        .storage-progress .progress-bar[aria-valuenow^="6"] {
+            background-color: #ffc107;
+        }
+        .storage-progress .progress-bar[aria-valuenow^="7"],
+        .storage-progress .progress-bar[aria-valuenow^="8"],
+        .storage-progress .progress-bar[aria-valuenow^="9"],
+        .storage-progress .progress-bar[aria-valuenow^="100"] {
+            background-color: #dc3545;
+        }
+        .storage-text {
+            font-size: 16px;
+            font-weight: bold;
+            padding: 5px;
         }
         .file-list {
             max-height: 400px;
             overflow-y: auto;
+            position: relative;
+        }
+        .file-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .file-table thead {
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 1;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .file-table th {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 2px solid #dee2e6;
+        }
+        .file-table td {
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .file-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: flex-start;
+            min-width: 100px;
+        }
+        .select-all-container {
+            margin-bottom: 10px;
+        }
+        .delete-selected {
+            margin-bottom: 10px;
+            padding: 5px 15px;
+            background-color: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            display: none;
+        }
+        .delete-selected:hover {
+            background-color: #c82333;
+        }
+        .file-checkbox {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+        }
+        .upload-progress {
+            display: none;
+            margin-top: 10px;
+        }
+        .upload-progress .progress {
+            height: 20px;
+            background-color: #f5f5f5;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .upload-progress .progress-bar {
+            background: #4a90e2;
+            transition: width 0.2s ease;
+            background-image: linear-gradient(
+                45deg,
+                rgba(255, 255, 255, 0.15) 25%,
+                transparent 25%,
+                transparent 50%,
+                rgba(255, 255, 255, 0.15) 50%,
+                rgba(255, 255, 255, 0.15) 75%,
+                transparent 75%,
+                transparent
+            );
+            background-size: 40px 40px;
+            animation: progress-bar-stripes 1s linear infinite;
+            height: 100%;
+        }
+        .upload-progress .progress-text {
+            text-align: center;
+            margin-top: 5px;
+            font-size: 14px;
+            color: #666;
+        }
+        @keyframes progress-bar-stripes {
+            from { background-position: 40px 0; }
+            to { background-position: 0 0; }
+        }
+        .btn-download, .btn-delete {
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-download {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-download:hover {
+            background-color: #218838;
+            color: white;
+        }
+        .btn-delete {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-delete:hover {
+            background-color: #c82333;
+            color: white;
         }
     </style>
 </head>
@@ -21,10 +199,20 @@
         
         <div class="card mb-4">
             <div class="card-body">
-                <h5 class="card-title">Использованное пространство</h5>
-                <div class="progress mb-2">
-                    <div class="progress-bar" role="progressbar" style="width: {{ used_percentage }}%">
-                        {{ "%.2f"|format(used_space) }} MB / 500 MB
+                <div class="storage-info">
+                    <div class="storage-progress">
+                        <div class="progress">
+                            <div class="progress-bar" role="progressbar" 
+                                 style="width: {{ '%.1f' % used_percentage }}%" 
+                                 aria-valuenow="{{ '%.1f' % used_percentage }}" 
+                                 aria-valuemin="0" 
+                                 aria-valuemax="100">
+                                {{ '%.1f' % used_percentage }}%
+                            </div>
+                        </div>
+                    </div>
+                    <div class="storage-text">
+                        Использовано: {{ '%.2f' % used_space }} MB из 500 MB
                     </div>
                 </div>
             </div>
@@ -38,6 +226,12 @@
                         <input type="file" class="form-control" id="fileInput" multiple>
                     </div>
                     <button type="submit" class="btn btn-primary">Загрузить</button>
+                    <div class="upload-progress">
+                        <div class="progress mt-2">
+                            <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <div class="progress-text"></div>
+                    </div>
                 </form>
             </div>
         </div>
@@ -45,30 +239,49 @@
         <div class="card">
             <div class="card-body">
                 <h5 class="card-title">Файлы</h5>
-                <div class="file-list">
-                    <table class="table">
-                        <thead>
-                            <tr>
-                                <th>Имя файла</th>
-                                <th>Размер</th>
-                                <th>Дата изменения</th>
-                                <th>Действия</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for file in files %}
-                            <tr>
-                                <td>{{ file.name }}</td>
-                                <td>{{ "%.2f"|format(file.size / (1024 * 1024)) }} MB</td>
-                                <td>{{ file.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                                <td>
-                                    <a href="/space/{{ link_id }}/download/{{ file.name }}" class="btn btn-sm btn-primary">Скачать</a>
-                                    <button onclick="deleteFile('{{ file.name }}')" class="btn btn-sm btn-danger">Удалить</button>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                <div class="files-list">
+                    <h2>Файлы в хранилище</h2>
+                    <div class="select-all-container">
+                        <input type="checkbox" id="select-all" class="file-checkbox">
+                        <label for="select-all">Выбрать все</label>
+                        <button id="delete-selected" class="delete-selected">Удалить выбранные</button>
+                    </div>
+                    <div class="file-list">
+                        <table class="file-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 40px;"></th>
+                                    <th>Имя файла</th>
+                                    <th>Размер</th>
+                                    <th>Дата изменения</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for file in files %}
+                                <tr>
+                                    <td>
+                                        <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
+                                    </td>
+                                    <td>{{ file.name }}</td>
+                                    <td>{{ "%.2f"|format(file.size / (1024 * 1024)) }} MB</td>
+                                    <td>{{ file.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                                    <td class="file-actions">
+                                        <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}" 
+                                           class="btn btn-download" title="Скачать">
+                                            <i class="fas fa-download"></i>
+                                        </a>
+                                        <button class="btn btn-delete" 
+                                                onclick="deleteFile('{{ file.name }}')" 
+                                                title="Удалить">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -76,6 +289,8 @@
 
     <script>
         const linkId = '{{ link_id }}';
+        let totalUploadSize = 0;
+        let currentUploadedSize = 0;
         
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -85,29 +300,121 @@
                 alert('Пожалуйста, выберите файлы для загрузки');
                 return;
             }
+
+            const uploadProgress = document.querySelector('.upload-progress');
+            const progressBar = uploadProgress.querySelector('.progress-bar');
+            uploadProgress.style.display = 'block';
             
-            const formData = new FormData();
+            // Рассчитываем общий размер всех файлов
+            totalUploadSize = Array.from(files).reduce((total, file) => total + file.size, 0);
+            currentUploadedSize = 0;
+
             for (const file of files) {
-                formData.append('file', file);
+                try {
+                    let currentChunkSize = 1024 * 1024; // 1MB chunks
+                    const totalSize = file.size;
+                    let uploadedSize = 0;
+
+                    // Проверяем общий размер файла
+                    if (totalSize > 500 * 1024 * 1024) {
+                        alert(`Файл ${file.name} слишком большой. Максимальный размер файла - 500 MB`);
+                        continue;
+                    }
+
+                    let chunkNumber = 0;
+                    while (uploadedSize < totalSize) {
+                        const chunk = file.slice(uploadedSize, Math.min(uploadedSize + currentChunkSize, totalSize));
+                        const formData = new FormData();
+                        formData.append('file', new Blob([chunk], { type: file.type }), file.name);
+                        formData.append('chunk', chunkNumber.toString());
+                        formData.append('chunks', Math.ceil(totalSize / currentChunkSize).toString());
+                        formData.append('total_size', totalSize.toString());
+
+                        let retries = 3;
+                        let uploaded = false;
+
+                        while (retries > 0 && !uploaded) {
+                            try {
+                                const response = await fetch(`/space/${linkId}/upload`, {
+                                    method: 'POST',
+                                    body: formData
+                                });
+
+                                if (!response.ok) {
+                                    if (response.status === 413) {
+                                        currentChunkSize = Math.floor(currentChunkSize / 2);
+                                        console.log(`Уменьшаем размер чанка до ${currentChunkSize} байт`);
+                                        if (currentChunkSize < 64 * 1024) {
+                                            throw new Error('Невозможно уменьшить размер чанка дальше');
+                                        }
+                                        continue;
+                                    }
+
+                                    const contentType = response.headers.get('content-type');
+                                    const errorText = contentType && contentType.includes('application/json') 
+                                        ? (await response.json()).error 
+                                        : await response.text();
+                                    throw new Error(errorText);
+                                }
+
+                                const result = await response.json();
+                                if (!result.success) {
+                                    throw new Error(result.error || 'Неизвестная ошибка');
+                                }
+
+                                uploadedSize += chunk.size;
+                                currentUploadedSize += chunk.size;
+                                
+                                // Обновляем общий прогресс загрузки
+                                const totalProgress = (currentUploadedSize / totalUploadSize) * 100;
+                                progressBar.style.width = `${totalProgress}%`;
+                                
+                                // Обновляем текст прогресса
+                                let progressText = document.querySelector('.upload-progress .progress-text');
+                                if (!progressText) {
+                                    progressText = document.createElement('div');
+                                    progressText.className = 'progress-text';
+                                    progressBar.parentElement.parentElement.appendChild(progressText);
+                                }
+                                progressText.textContent = `Загрузка: ${file.name} (${Math.round(totalProgress)}%)`;
+                                
+                                uploaded = true;
+                                chunkNumber++;
+
+                                // Добавляем небольшую задержку между чанками для более плавной анимации
+                                await new Promise(resolve => setTimeout(resolve, 50));
+
+                            } catch (error) {
+                                retries--;
+                                if (retries === 0) {
+                                    throw error;
+                                }
+                                console.log(`Ошибка при загрузке части ${chunkNumber + 1}, повторная попытка...`);
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                            }
+                        }
+
+                        if (!uploaded) {
+                            throw new Error('Не удалось загрузить часть файла после всех попыток');
+                        }
+                    }
+
+                } catch (error) {
+                    console.error('Ошибка:', error);
+                    alert(`Ошибка при загрузке файла ${file.name}: ${error.message}`);
+                    continue;
+                }
             }
             
-            try {
-                const response = await fetch(`/space/${linkId}/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                if (response.ok) {
-                    location.reload();
-                } else {
-                    const data = await response.json();
-                    alert(data.error || 'Ошибка при загрузке файлов');
-                }
-            } catch (error) {
-                alert('Ошибка при загрузке файлов');
-            }
+            // Добавляем небольшую задержку перед обновлением страницы
+            setTimeout(() => {
+                location.reload();
+            }, 500);
+            
+            // Скрываем прогресс-бар
+            uploadProgress.style.display = 'none';
         });
-        
+
         async function deleteFile(filename) {
             if (!confirm('Вы уверены, что хотите удалить этот файл?')) {
                 return;
@@ -118,16 +425,82 @@
                     method: 'POST'
                 });
                 
+                let data;
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    throw new Error('Получен неверный ответ от сервера');
+                }
+                
                 if (response.ok) {
                     location.reload();
                 } else {
-                    const data = await response.json();
                     alert(data.error || 'Ошибка при удалении файла');
                 }
             } catch (error) {
-                alert('Ошибка при удалении файла');
+                console.error('Ошибка:', error);
+                alert(`Ошибка при удалении файла: ${error.message}`);
             }
         }
+
+        document.getElementById('select-all').addEventListener('change', function() {
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            const deleteButton = document.getElementById('delete-selected');
+            checkboxes.forEach(checkbox => {
+                if (checkbox !== this) {
+                    checkbox.checked = this.checked;
+                }
+            });
+            deleteButton.style.display = this.checked ? 'block' : 'none';
+        });
+
+        document.querySelectorAll('.file-checkbox').forEach(checkbox => {
+            checkbox.addEventListener('change', function() {
+                const deleteButton = document.getElementById('delete-selected');
+                const checkedBoxes = document.querySelectorAll('.file-checkbox:checked');
+                deleteButton.style.display = checkedBoxes.length > 0 ? 'block' : 'none';
+                
+                // Обновляем состояние "выбрать все"
+                const selectAll = document.getElementById('select-all');
+                const allCheckboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
+                selectAll.checked = allCheckboxes.length === checkedBoxes.length - 1;
+            });
+        });
+
+        document.getElementById('delete-selected').addEventListener('click', async function() {
+            if (!confirm('Вы уверены, что хотите удалить выбранные файлы?')) {
+                return;
+            }
+
+            const checkedBoxes = document.querySelectorAll('.file-checkbox:checked:not(#select-all)');
+            const files = Array.from(checkedBoxes).map(cb => cb.dataset.filename);
+            
+            for (const filename of files) {
+                try {
+                    const response = await fetch(`/space/${linkId}/delete/${filename}`, {
+                        method: 'POST'
+                    });
+                    
+                    if (!response.ok) {
+                        const data = await response.json();
+                        throw new Error(data.error || 'Ошибка при удалении файла');
+                    }
+                } catch (error) {
+                    console.error('Ошибка:', error);
+                    alert(`Ошибка при удалении файла ${filename}: ${error.message}`);
+                }
+            }
+            
+            location.reload();
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const progressBar = document.querySelector('.storage-progress .progress-bar');
+            const value = parseFloat(progressBar.getAttribute('aria-valuenow'));
+            progressBar.style.setProperty('--value', '100%');
+            progressBar.style.setProperty('--bg-size', (100 * 100 / value) + '%');
+        });
     </script>
 </body>
 </html> 
