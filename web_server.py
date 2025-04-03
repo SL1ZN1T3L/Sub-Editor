@@ -1,11 +1,8 @@
-from flask import Flask, send_file, abort, request, render_template, jsonify, redirect, url_for
+from flask import Flask, send_file, request, render_template, jsonify
 import sqlite3
 import os
 import logging
 from datetime import datetime
-import traceback
-import zipfile
-import io
 import shutil
 from werkzeug.utils import secure_filename
 
