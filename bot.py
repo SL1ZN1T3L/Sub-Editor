@@ -10,8 +10,6 @@ import base64
 import aiohttp
 import qrcode
 import operator
-import hashlib
-from pathlib import Path
 import logging
 
 # Определяем путь к директории бота
