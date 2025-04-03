@@ -12,6 +12,26 @@ import qrcode
 import operator
 import hashlib
 from pathlib import Path
+import logging
+
+# Определяем путь к директории бота
+BOT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
+TEMP_DIR = os.path.join(BOT_DIR, 'temp')
+LOG_DIR = os.path.join(BOT_DIR, 'logs')
+TEMP_LINKS_DIR = os.path.join(BOT_DIR, 'temp_links')
+TEMP_LINKS_DB = os.path.join(BOT_DIR, 'temp_links.db')
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOG_DIR, 'bot.log')),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -33,7 +53,7 @@ if not USER_PLUS_CODE:
 TEMP_LINK_DOMAIN = os.getenv('TEMP_LINK_DOMAIN', 'https://your-domain.com')
 
 # Константы для ограничений
-MAX_FILE_SIZE = 10 * 1024  # 10 MB
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_LINKS = 1000  # Максимальное количество ссылок в файле
 ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пустое расширение
 DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолчанию
@@ -41,14 +61,6 @@ MAX_TEMP_LINK_HOURS = 24  # Максимальное время хранения
 
 # Состояния разговора
 CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA, TEMP_LINK, TEMP_LINK_DURATION = range(13)
-
-# Определяем путь к директории бота
-BOT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BOT_DIR, 'bot_users.db')
-TEMP_DIR = os.path.join(BOT_DIR, 'temp')
-LOG_DIR = os.path.join(BOT_DIR, 'logs')
-TEMP_LINKS_DIR = os.path.join(BOT_DIR, 'temp_links')
-TEMP_LINKS_DB = os.path.join(BOT_DIR, 'temp_links.db')
 
 # Добавим константы для ролей
 class UserRole:
@@ -65,12 +77,22 @@ OPERATORS = {
 
 def ensure_directories():
     """Создание необходимых директорий с обработкой ошибок"""
-    for directory in [TEMP_DIR, LOG_DIR, TEMP_LINKS_DIR]:
+    directories = [TEMP_DIR, LOG_DIR, TEMP_LINKS_DIR]
+    for directory in directories:
         try:
             if not os.path.exists(directory):
                 os.makedirs(directory)
+                logger.info(f"Создана директория: {directory}")
+                # Проверяем права на запись
+                test_file = os.path.join(directory, 'test.txt')
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                logger.info(f"Проверка прав доступа к директории {directory} успешна")
         except Exception as e:
-            print(f"Ошибка при создании директории {directory}: {e}")
+            error_message = f"Ошибка при создании директории {directory}: {e}"
+            logger.error(error_message)
+            print(error_message)
             sys.exit(1)
 
 def log_error(user_id, error_message):
@@ -86,6 +108,87 @@ def log_error(user_id, error_message):
         print(f"[{timestamp}] User {user_id}: {error_message}")
 
 def setup_database():
+    """Создание и проверка базы данных"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Создаем таблицу users с полем role вместо is_admin
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                is_verified BOOLEAN DEFAULT FALSE,
+                role TEXT DEFAULT 'user',
+                usage_count INTEGER DEFAULT 0,
+                merged_count INTEGER DEFAULT 0,
+                qr_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        logger.info("Таблица users создана или уже существует")
+        
+        # Создаем таблицу для статуса бота если её нет
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS bot_status (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                status TEXT DEFAULT 'enabled',
+                lines_to_keep INTEGER DEFAULT 10
+            )
+        ''')
+        logger.info("Таблица bot_status создана или уже существует")
+        
+        # Создаем таблицу для персональных настроек пользователей
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                lines_to_keep INTEGER DEFAULT 10
+            )
+        ''')
+        logger.info("Таблица user_settings создана или уже существует")
+
+        # Создаем таблицу для временных ссылок
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS temp_links (
+                link_id TEXT PRIMARY KEY,
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        logger.info("Таблица temp_links создана или уже существует")
+        
+        # Создаем таблицу для файлов временных ссылок
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS temp_link_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                link_id TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                FOREIGN KEY (link_id) REFERENCES temp_links(link_id) ON DELETE CASCADE
+            )
+        ''')
+        logger.info("Таблица temp_link_files создана или уже существует")
+        
+        # Проверяем, есть ли запись о статусе бота
+        c.execute('SELECT COUNT(*) FROM bot_status')
+        if c.fetchone()[0] == 0:
+            c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
+            logger.info("Добавлена запись о статусе бота")
+        
+        conn.commit()
+        logger.info("База данных успешно инициализирована")
+        
+    except sqlite3.Error as e:
+        conn.rollback()
+        error_message = f"Ошибка при создании базы данных: {str(e)}"
+        logger.error(error_message)
+        raise
+        
+    finally:
+        conn.close()
+
+def is_user_verified(user_id):
+    """Проверка верификации пользователя"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
@@ -124,9 +227,19 @@ def setup_database():
     c.execute('''
         CREATE TABLE IF NOT EXISTS temp_links (
             link_id TEXT PRIMARY KEY,
-            file_path TEXT NOT NULL,
             expires_at TIMESTAMP NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Создаем таблицу для файлов временных ссылок
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS temp_link_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            link_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            FOREIGN KEY (link_id) REFERENCES temp_links(link_id) ON DELETE CASCADE
         )
     ''')
     
@@ -358,7 +471,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f'Отправьте мне файл со ссылками (txt, csv или md), '
             f'и я верну вам последние {lines_to_keep} ссылок в формате HTML.\n'
             'Ограничения:\n'
-            '- Максимальный размер файла: 10 MB\n'
+            '- Максимальный размер файла: 50 MB\n'
             '- Максимальное количество ссылок: 1000\n'
             '- Поддерживаемые форматы: .txt, .csv, .md'
         )
@@ -384,44 +497,30 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not check_user_plus_rights(update.effective_user.id):
             await update.message.reply_text("У вас нет прав для использования этой функции.")
             return MENU
+        # Создаем клавиатуру с выбором срока хранения
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['Назад']
+        ]
         await update.message.reply_text(
-            "Отправьте файл, для которого хотите создать временную ссылку.\n"
-            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024)} MB"
+            "Выберите срок хранения временного хранилища:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
-        return TEMP_LINK
+        return TEMP_LINK_DURATION
     elif text == 'ℹ️ Помощь':
-        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
-        help_text = (
-            "🤖 Этот бот помогает обрабатывать файлы, объединять подписки и создавать QR-коды.\n\n"
-            "📤 Обработка файлов:\n"
-            f"1. Нажмите '📤 Обработать файл'\n"
-            f"2. Отправьте файл со ссылками\n"
-            f"3. Получите обработанный файл с последними {lines_to_keep} ссылками\n\n"
-            "🔄 Объединение подписок:\n"
-            "1. Нажмите '🔄 Объединить подписки'\n"
-            "2. Отправьте ссылки на подписки по одной\n"
-            "3. Нажмите 'Объединить' когда закончите\n\n"
-            "📱 Создание QR-кодов:\n"
-            "1. Нажмите '📱 Создать QR-код'\n"
-            "2. Выберите тип QR-кода\n"
-            "3. Введите необходимые данные\n\n"
-            "🔗 Создание временных ссылок (только для User+ и Админов):\n"
-            "1. Нажмите '🔗 Создать временную ссылку'\n"
-            "2. Отправьте файл\n"
-            "3. Выберите срок хранения\n"
-            "4. Получите ссылку на скачивание\n\n"
-            "⚙️ Настройки:\n"
-            "- Настройка количества строк для обработки файлов\n\n"
-            "📊 Статистика:\n"
-            "- Количество обработанных файлов\n"
-            "- Количество объединенных подписок\n"
-            "- Количество созданных QR-кодов\n"
-            "- Текущее количество строк\n\n"
-            "Поддерживаемые форматы файлов: .txt, .csv, .md\n"
-            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB\n"
-            f"Максимальное количество строк: {MAX_LINKS}"
+        await update.message.reply_text(
+            "📚 *Помощь по использованию бота*\n\n"
+            "📤 *Обработать файл* - загрузите файл со ссылками, и бот вернет последние N ссылок\n"
+            "🔄 *Объединить подписки* - объединяет несколько подписок в одну\n"
+            "📱 *Создать QR-код* - создает QR-код для различных типов данных\n"
+            "🔗 *Создать временную ссылку* - создает временное хранилище для файлов\n"
+            "📊 *Статистика* - показывает вашу статистику использования\n"
+            "⚙️ *Настройки* - настройки бота\n\n"
+            "Для начала работы просто выберите нужную функцию в меню.",
+            parse_mode='Markdown'
         )
-        await update.message.reply_text(help_text)
+        return MENU
     elif text == '📊 Статистика':
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -1087,72 +1186,143 @@ async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def generate_temp_link_id():
     """Генерация уникального ID для временной ссылки"""
-    return hashlib.md5(str(datetime.now().timestamp()).encode()).hexdigest()[:8]
+    # Используем только буквы и цифры для более короткого ID
+    chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    return ''.join(random.choice(chars) for _ in range(4))
 
-def save_temp_link(file_path, duration_hours):
+def save_temp_link(file_path, original_name, duration_hours):
     """Сохранение информации о временной ссылке"""
-    link_id = generate_temp_link_id()
-    expires_at = datetime.now() + timedelta(hours=duration_hours)
-    
-    conn = sqlite3.connect(DB_PATH)  # Используем основную БД
-    c = conn.cursor()
-    
-    c.execute('''
-        INSERT INTO temp_links (link_id, file_path, expires_at)
-        VALUES (?, ?, ?)
-    ''', (link_id, file_path, expires_at))
-    
-    conn.commit()
-    conn.close()
-    
-    return link_id
+    try:
+        link_id = generate_temp_link_id()
+        expires_at = datetime.now() + timedelta(hours=duration_hours)
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        try:
+            # Создаем запись о временной ссылке
+            c.execute('''
+                INSERT INTO temp_links (link_id, expires_at)
+                VALUES (?, ?)
+            ''', (link_id, expires_at))
+            
+            # Добавляем информацию о файле
+            c.execute('''
+                INSERT INTO temp_link_files (link_id, file_path, original_name)
+                VALUES (?, ?, ?)
+            ''', (link_id, file_path, original_name))
+            
+            conn.commit()
+            return link_id
+            
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_message = f"Ошибка базы данных при сохранении временной ссылки: {str(e)}"
+            log_error(None, error_message)
+            raise
+            
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        error_message = f"Критическая ошибка при сохранении временной ссылки: {str(e)}"
+        log_error(None, error_message)
+        raise
 
 def get_temp_link_info(link_id):
     """Получение информации о временной ссылке"""
-    conn = sqlite3.connect(DB_PATH)  # Используем основную БД
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Проверяем срок действия ссылки
     c.execute('''
-        SELECT file_path, expires_at
+        SELECT expires_at
         FROM temp_links
         WHERE link_id = ? AND expires_at > datetime('now')
     ''', (link_id,))
     
     result = c.fetchone()
+    if not result:
+        conn.close()
+        return None
+    
+    # Получаем список файлов
+    c.execute('''
+        SELECT file_path, original_name
+        FROM temp_link_files
+        WHERE link_id = ?
+    ''', (link_id,))
+    
+    files = c.fetchall()
     conn.close()
     
-    return result
+    return {
+        'expires_at': result[0],
+        'files': files
+    }
 
 def cleanup_expired_links():
     """Очистка истекших временных ссылок"""
-    conn = sqlite3.connect(DB_PATH)  # Используем основную БД
-    c = conn.cursor()
-    
-    # Получаем список истекших ссылок
-    c.execute('''
-        SELECT file_path
-        FROM temp_links
-        WHERE expires_at <= datetime('now')
-    ''')
-    
-    expired_files = c.fetchall()
-    
-    # Удаляем файлы
-    for file_path in expired_files:
+    try:
+        # Проверяем и создаем директорию для временных ссылок
+        if not os.path.exists(TEMP_LINKS_DIR):
+            os.makedirs(TEMP_LINKS_DIR)
+            logger.info(f"Создана директория для временных ссылок: {TEMP_LINKS_DIR}")
+            
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
         try:
-            if os.path.exists(file_path[0]):
-                os.remove(file_path[0])
-        except Exception as e:
-            print(f"Ошибка при удалении файла {file_path[0]}: {e}")
-    
-    # Удаляем записи из базы данных
-    c.execute('''
-        DELETE FROM temp_links
-        WHERE expires_at <= datetime('now')
-    ''')
-    
-    conn.commit()
-    conn.close()
+            # Получаем список истекших ссылок
+            c.execute('''
+                SELECT link_id
+                FROM temp_links
+                WHERE expires_at <= datetime('now')
+            ''')
+            
+            expired_links = c.fetchall()
+            logger.info(f"Найдено {len(expired_links)} истекших ссылок")
+            
+            # Удаляем файлы и записи из базы данных
+            for link_id in expired_links:
+                # Получаем список файлов для удаления
+                c.execute('SELECT file_path FROM temp_link_files WHERE link_id = ?', (link_id[0],))
+                files = c.fetchall()
+                
+                # Удаляем файлы
+                for file_path in files:
+                    try:
+                        if os.path.exists(file_path[0]):
+                            os.remove(file_path[0])
+                            logger.info(f"Удален файл: {file_path[0]}")
+                    except Exception as e:
+                        error_message = f"Ошибка при удалении файла {file_path[0]}: {str(e)}"
+                        logger.error(error_message)
+                
+                # Удаляем записи из базы данных
+                c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id[0],))
+            
+            conn.commit()
+            
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_message = f"Ошибка базы данных при очистке истекших ссылок: {str(e)}"
+            logger.error(error_message)
+            
+        finally:
+            conn.close()
+            
+    except Exception as e:
+        error_message = f"Критическая ошибка при очистке истекших ссылок: {str(e)}"
+        logger.error(error_message)
+
+def get_temp_link_keyboard():
+    """Создание клавиатуры для меню временных ссылок"""
+    keyboard = [
+        ['✅ Завершить'],
+        ['Назад']
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка создания временной ссылки"""
@@ -1160,118 +1330,92 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("У вас нет прав для использования этой функции.")
         return await show_menu(update, context)
     
-    if update.message.text == "🔗 Создать временную ссылку":
-        await update.message.reply_text(
-            "Отправьте файл, для которого хотите создать временную ссылку.\n"
-            f"Максимальный размер файла: {MAX_FILE_SIZE // (1024 * 1024)} MB"
-        )
-        return TEMP_LINK
+    # Создаем клавиатуру с выбором срока хранения
+    keyboard = [
+        ['1 час', '6 часов'],
+        ['12 часов', '24 часа'],
+        ['Назад']
+    ]
     
-    if update.message.document:
-        document = update.message.document
-        
-        # Проверка размера файла
-        if document.file_size > MAX_FILE_SIZE:
-            await update.message.reply_text(
-                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024)} MB"
-            )
-            return TEMP_LINK
-        
-        # Скачиваем файл
-        file = await context.bot.get_file(document.file_id)
-        downloaded_file = await file.download_as_bytearray()
-        
-        # Создаем уникальное имя файла
-        file_name = f"{document.file_name}_{update.effective_user.id}_{int(datetime.now().timestamp())}"
-        file_path = os.path.join(TEMP_LINKS_DIR, file_name)
-        
-        # Сохраняем файл
-        with open(file_path, 'wb') as f:
-            f.write(downloaded_file)
-        
-        # Сохраняем путь к файлу в контексте
-        context.user_data['temp_file_path'] = file_path
-        
-        # Запрашиваем срок хранения
-        keyboard = [
-            ['1 час', '6 часов'],
-            ['12 часов', '24 часа'],
-            ['Назад']
-        ]
+    await update.message.reply_text(
+        "Выберите срок хранения временного хранилища:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+    
+    return TEMP_LINK_DURATION
+
+async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора срока хранения временного хранилища"""
+    if update.message.text == "Назад":
+        await show_menu(update, context)
+        return MENU
+    
+    # Определяем срок хранения в часах
+    duration_map = {
+        '1 час': 1,
+        '6 часов': 6,
+        '12 часов': 12,
+        '24 часа': 24
+    }
+    
+    if update.message.text not in duration_map:
         await update.message.reply_text(
-            "Выберите срок хранения файла:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            "Пожалуйста, выберите срок хранения из предложенных вариантов."
         )
         return TEMP_LINK_DURATION
     
-    await update.message.reply_text("Пожалуйста, отправьте файл.")
-    return TEMP_LINK
-
-async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора срока хранения временной ссылки"""
-    if update.message.text == "Назад":
-        # Удаляем сохраненный файл
-        if 'temp_file_path' in context.user_data:
-            try:
-                if os.path.exists(context.user_data['temp_file_path']):
-                    os.remove(context.user_data['temp_file_path'])
-            except Exception as e:
-                print(f"Ошибка при удалении файла: {e}")
-        context.user_data.clear()
-        return await show_menu(update, context)
+    duration_hours = duration_map[update.message.text]
     
     try:
-        # Определяем срок хранения
-        duration_map = {
-            '1 час': 1,
-            '6 часов': 6,
-            '12 часов': 12,
-            '24 часа': 24
-        }
+        # Создаем временное хранилище
+        link_id = generate_temp_link_id()
+        expires_at = datetime.now() + timedelta(hours=duration_hours)
         
-        if update.message.text not in duration_map:
-            await update.message.reply_text("Пожалуйста, выберите срок из предложенных вариантов.")
-            return TEMP_LINK_DURATION
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         
-        duration_hours = duration_map[update.message.text]
-        file_path = context.user_data.get('temp_file_path')
-        
-        if not file_path or not os.path.exists(file_path):
-            await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте снова.")
-            return await show_menu(update, context)
-        
-        # Создаем временную ссылку
-        link_id = save_temp_link(file_path, duration_hours)
-        temp_link = f"{TEMP_LINK_DOMAIN}/download/{link_id}"
-        
-        # Отправляем ссылку
-        await update.message.reply_text(
-            f"Ваша временная ссылка (действует {duration_hours} часов):\n\n"
-            f"`{temp_link}`",
-            parse_mode='Markdown'
-        )
-        
-        # Очищаем данные
-        context.user_data.clear()
-        return await show_menu(update, context)
-        
+        try:
+            # Создаем запись о временном хранилище
+            c.execute('''
+                INSERT INTO temp_links (link_id, expires_at)
+                VALUES (?, ?)
+            ''', (link_id, expires_at))
+            
+            conn.commit()
+            
+            # Формируем URL для доступа к хранилищу
+            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+            
+            # Отправляем пользователю ссылку
+            await update.message.reply_text(
+                f"✅ Временное хранилище создано!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Срок действия: {duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}\n\n"
+                f"⚠️ Хранилище будет доступно до {expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"Вы можете загружать файлы через веб-интерфейс.",
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            
+            return MENU
+            
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_message = f"Ошибка базы данных при создании временного хранилища: {str(e)}"
+            logger.error(error_message)
+            raise
+            
+        finally:
+            conn.close()
+            
     except Exception as e:
-        error_message = f"Ошибка при создании временной ссылки: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        error_message = f"Ошибка при создании временного хранилища: {str(e)}"
+        logger.error(error_message)
         
-        # Удаляем сохраненный файл
-        if 'temp_file_path' in context.user_data:
-            try:
-                if os.path.exists(context.user_data['temp_file_path']):
-                    os.remove(context.user_data['temp_file_path'])
-            except Exception as e:
-                print(f"Ошибка при удалении файла: {e}")
-        
-        context.user_data.clear()
         await update.message.reply_text(
-            "Произошла ошибка при создании временной ссылки. Пожалуйста, попробуйте снова."
+            "Произошла ошибка при создании временного хранилища. Попробуйте снова.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
         )
-        return await show_menu(update, context)
+        return MENU
 
 def get_user_lines_to_keep(user_id):
     """Получение персонального количества строк для пользователя"""
@@ -1358,7 +1502,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверка размера файла
         if document.file_size > MAX_FILE_SIZE:
             await update.message.reply_text(
-                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024)} MB"
+                f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024 * 1024)} MB"
             )
             return PROCESS_FILE
 
@@ -1502,7 +1646,9 @@ def main():
                 SET_LINES: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_set_lines)],
                 QR_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_type)],
                 QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)],
-                TEMP_LINK: [MessageHandler(filters.Document.ALL, process_temp_link)],
+                TEMP_LINK: [
+                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, process_temp_link)
+                ],
                 TEMP_LINK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temp_link_duration)]
             },
             fallbacks=[
@@ -1520,6 +1666,7 @@ def main():
         print(f"База данных: {DB_PATH}")
         print(f"Временные файлы: {TEMP_DIR}")
         print(f"Логи: {LOG_DIR}")
+        print(f"Временные ссылки: {TEMP_LINKS_DIR}")
         application.run_polling()
 
     except Exception as e:
