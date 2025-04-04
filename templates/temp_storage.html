@@ -250,6 +250,9 @@
                         <input type="checkbox" id="select-all" class="file-checkbox">
                         <label for="select-all">Выбрать все</label>
                         <button id="delete-selected" class="delete-selected">Удалить выбранные</button>
+                        <button id="download-selected" class="btn btn-success" style="margin-left: 10px;">
+                            <i class="fas fa-download"></i> Скачать выбранные
+                        </button>
                     </div>
                     <div class="file-list">
                         <table class="file-table">
@@ -450,53 +453,98 @@
         }
 
         document.getElementById('select-all').addEventListener('change', function() {
-            const checkboxes = document.querySelectorAll('.file-checkbox');
-            const deleteButton = document.getElementById('delete-selected');
-            checkboxes.forEach(checkbox => {
-                if (checkbox !== this) {
-                    checkbox.checked = this.checked;
-                }
-            });
-            deleteButton.style.display = this.checked ? 'block' : 'none';
+            const checkboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
+            checkboxes.forEach(checkbox => checkbox.checked = this.checked);
+            updateButtonsVisibility();
         });
 
-        document.querySelectorAll('.file-checkbox').forEach(checkbox => {
+        document.querySelectorAll('.file-checkbox:not(#select-all)').forEach(checkbox => {
             checkbox.addEventListener('change', function() {
-                const deleteButton = document.getElementById('delete-selected');
-                const checkedBoxes = document.querySelectorAll('.file-checkbox:checked');
-                deleteButton.style.display = checkedBoxes.length > 0 ? 'block' : 'none';
-                
+                updateButtonsVisibility();
                 // Обновляем состояние "выбрать все"
-                const selectAll = document.getElementById('select-all');
                 const allCheckboxes = document.querySelectorAll('.file-checkbox:not(#select-all)');
-                selectAll.checked = allCheckboxes.length === checkedBoxes.length - 1;
+                const checkedBoxes = document.querySelectorAll('.file-checkbox:not(#select-all):checked');
+                document.getElementById('select-all').checked = allCheckboxes.length === checkedBoxes.length;
             });
+        });
+
+        function updateButtonsVisibility() {
+            const checkedBoxes = document.querySelectorAll('.file-checkbox:not(#select-all):checked');
+            const deleteButton = document.getElementById('delete-selected');
+            const downloadButton = document.getElementById('download-selected');
+            const hasChecked = checkedBoxes.length > 0;
+            
+            deleteButton.style.display = hasChecked ? 'inline-block' : 'none';
+            downloadButton.style.display = hasChecked ? 'inline-block' : 'none';
+        }
+
+        document.getElementById('download-selected').addEventListener('click', async function() {
+            const selectedFiles = Array.from(document.querySelectorAll('.file-checkbox:not(#select-all):checked'))
+                .map(checkbox => checkbox.getAttribute('data-filename'));
+            
+            if (selectedFiles.length === 0) {
+                alert('Выберите файлы для скачивания');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/space/${linkId}/download-multiple`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ files: selectedFiles })
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `files_${linkId}.zip`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                } else {
+                    const error = await response.json();
+                    alert(error.error || 'Ошибка при скачивании файлов');
+                }
+            } catch (error) {
+                console.error('Ошибка:', error);
+                alert('Произошла ошибка при скачивании файлов');
+            }
         });
 
         document.getElementById('delete-selected').addEventListener('click', async function() {
+            const selectedFiles = Array.from(document.querySelectorAll('.file-checkbox:not(#select-all):checked'))
+                .map(checkbox => checkbox.getAttribute('data-filename'));
+            
+            if (selectedFiles.length === 0) {
+                alert('Выберите файлы для удаления');
+                return;
+            }
+
             if (!confirm('Вы уверены, что хотите удалить выбранные файлы?')) {
                 return;
             }
 
-            const checkedBoxes = document.querySelectorAll('.file-checkbox:checked:not(#select-all)');
-            const files = Array.from(checkedBoxes).map(cb => cb.dataset.filename);
-            
-            for (const filename of files) {
+            for (const filename of selectedFiles) {
                 try {
                     const response = await fetch(`/space/${linkId}/delete/${filename}`, {
                         method: 'POST'
                     });
                     
                     if (!response.ok) {
-                        const data = await response.json();
-                        throw new Error(data.error || 'Ошибка при удалении файла');
+                        const error = await response.json();
+                        console.error(`Ошибка при удалении файла ${filename}:`, error);
                     }
                 } catch (error) {
-                    console.error('Ошибка:', error);
-                    alert(`Ошибка при удалении файла ${filename}: ${error.message}`);
+                    console.error(`Ошибка при удалении файла ${filename}:`, error);
                 }
             }
-            
+
+            // Перезагружаем страницу после удаления
             location.reload();
         });
 
@@ -527,6 +575,9 @@
             const value = parseFloat(progressBar.getAttribute('aria-valuenow'));
             progressBar.style.setProperty('--value', '100%');
             progressBar.style.setProperty('--bg-size', (100 * 100 / value) + '%');
+            
+            // Обновляем видимость кнопок при загрузке страницы
+            updateButtonsVisibility();
         });
     </script>
 </body>

@@ -7,6 +7,9 @@ import shutil
 from werkzeug.utils import secure_filename
 import threading
 import time
+import tempfile
+import zipfile
+from io import BytesIO
 
 # Настройка логирования
 logging.basicConfig(
@@ -315,6 +318,48 @@ def download_file(link_id, filename):
     except Exception as e:
         logger.error(f"Ошибка при скачивании файла: {str(e)}")
         return "Внутренняя ошибка сервера", 500
+
+@app.route('/space/<link_id>/download-multiple', methods=['POST'])
+def download_multiple_files(link_id):
+    """Скачивание нескольких файлов в архиве"""
+    try:
+        # Проверяем валидность хранилища
+        if not is_temp_storage_valid(link_id):
+            logger.error(f"Попытка скачивания из недействительного хранилища: {link_id}")
+            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
+
+        # Получаем список файлов для скачивания
+        files = request.json.get('files', [])
+        if not files:
+            return jsonify({'error': 'Файлы не выбраны'}), 400
+
+        storage_path = get_temp_storage_path(link_id)
+        
+        # Создаем объект в памяти для архива
+        memory_file = BytesIO()
+        
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for filename in files:
+                file_path = os.path.join(storage_path, secure_filename(filename))
+                if os.path.exists(file_path) and os.path.isfile(file_path):
+                    # Добавляем файл в архив
+                    zf.write(file_path, filename)
+                else:
+                    logger.warning(f"Файл не найден: {filename}")
+
+        # Перемещаем указатель в начало файла
+        memory_file.seek(0)
+        
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'files_{link_id}.zip'
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка при скачивании файлов: {str(e)}")
+        return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
 
 @app.route('/health')
 def health_check():
