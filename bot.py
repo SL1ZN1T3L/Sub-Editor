@@ -11,6 +11,7 @@ import aiohttp
 import qrcode
 import operator
 import logging
+import shutil
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -450,7 +451,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📤 *Обработать файл* - загрузите файл со ссылками, и бот вернет последние N ссылок\n"
             "🔄 *Объединить подписки* - объединяет несколько подписок в одну\n"
             "📱 *Создать QR-код* - создает QR-код для различных типов данных\n"
-            "🔗 *Создать временную ссылку* - создает временное хранилище для файлов\n"
+            "🔗 *Создать временную ссылку* - создает временное хранилище для файлов, которое можно удалить в любой момент\n"
             "📊 *Статистика* - показывает вашу статистику использования\n"
             "⚙️ *Настройки* - настройки бота\n\n"
             "Для начала работы просто выберите нужную функцию в меню.",
@@ -1352,14 +1353,23 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         if active_storage:
             link_id, expires_at = active_storage
             storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+            
+            # Создаем клавиатуру с опцией удаления
+            keyboard = [
+                [KeyboardButton("🗑️ Удалить хранилище")],
+                [KeyboardButton("Назад")]
+            ]
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
             await update.message.reply_text(
                 f"У вас уже есть активное временное хранилище!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
                 f"⏱ Срок действия до: {expires_at}\n\n"
-                f"Вы можете продолжать использовать это хранилище или дождаться окончания его срока действия для создания нового.",
-                reply_markup=get_menu_keyboard(update.effective_user.id)
+                f"Вы можете продолжать использовать это хранилище или удалить его.",
+                reply_markup=markup
             )
-            return MENU
+            context.user_data['current_storage'] = link_id
+            return TEMP_LINK
             
         duration_hours = duration_map[update.message.text]
         
@@ -1378,17 +1388,24 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         # Формируем URL для доступа к хранилищу
         storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
         
-        # Отправляем пользователю ссылку
+        # Отправляем пользователю ссылку с кнопкой удаления
+        keyboard = [
+            [KeyboardButton("🗑️ Удалить хранилище")],
+            [KeyboardButton("Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
         await update.message.reply_text(
             f"✅ Временное хранилище создано!\n\n"
             f"🔗 Ссылка: {storage_url}\n"
             f"⏱ Срок действия: {duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}\n\n"
             f"⚠️ Хранилище будет доступно до {expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             f"Вы можете загружать файлы через веб-интерфейс.",
-            reply_markup=get_menu_keyboard(update.effective_user.id)
+            reply_markup=markup
         )
         
-        return MENU
+        context.user_data['current_storage'] = link_id
+        return TEMP_LINK
             
     except Exception as e:
         if 'conn' in locals():
@@ -1398,6 +1415,72 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         
         await update.message.reply_text(
             "Произошла ошибка при создании временного хранилища. Попробуйте снова.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+        
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+async def delete_user_storage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление временного хранилища пользователя"""
+    if update.message.text == "Назад":
+        await show_menu(update, context)
+        return MENU
+    
+    if update.message.text != "🗑️ Удалить хранилище":
+        await show_menu(update, context)
+        return MENU
+    
+    link_id = context.user_data.get('current_storage')
+    if not link_id:
+        await update.message.reply_text(
+            "Не найдено активное хранилище для удаления.", 
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+    
+    try:
+        # Проверяем существование хранилища
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            SELECT link_id FROM temp_links 
+            WHERE link_id = ? AND user_id = ?
+        ''', (link_id, update.effective_user.id))
+        
+        if not c.fetchone():
+            await update.message.reply_text(
+                "Хранилище не найдено или уже удалено.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+        
+        # Удаляем файлы хранилища
+        storage_path = os.path.join(BOT_DIR, 'temp_storage', link_id)
+        if os.path.exists(storage_path):
+            shutil.rmtree(storage_path)
+        
+        # Удаляем запись из базы данных
+        c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+        conn.commit()
+        
+        await update.message.reply_text(
+            "✅ Хранилище успешно удалено!", 
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        del context.user_data['current_storage']
+        return MENU
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        error_message = f"Ошибка при удалении хранилища: {str(e)}"
+        logger.error(error_message)
+        
+        await update.message.reply_text(
+            "Произошла ошибка при удалении хранилища. Попробуйте снова.",
             reply_markup=get_menu_keyboard(update.effective_user.id)
         )
         return MENU
@@ -1653,7 +1736,7 @@ def main():
                 QR_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_type)],
                 QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)],
                 TEMP_LINK: [
-                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, process_temp_link)
+                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, delete_user_storage)
                 ],
                 TEMP_LINK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temp_link_duration)]
             },

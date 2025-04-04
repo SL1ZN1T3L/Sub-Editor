@@ -270,6 +270,33 @@ def delete_file(link_id, filename):
         logger.error(f"Ошибка при удалении файла: {str(e)}")
         return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
 
+@app.route('/space/<link_id>/delete-all', methods=['POST'])
+def delete_all_storage(link_id):
+    """Удаление всего временного хранилища"""
+    try:
+        if not is_temp_storage_valid(link_id):
+            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
+            
+        # Получаем путь к хранилищу
+        storage_path = get_temp_storage_path(link_id)
+        
+        # Удаляем директорию с файлами
+        if os.path.exists(storage_path):
+            shutil.rmtree(storage_path)
+            logger.info(f"Удалено хранилище по запросу пользователя: {link_id}")
+            
+        # Удаляем запись из базы данных
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Ошибка при удалении хранилища: {str(e)}")
+        return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
+
 @app.route('/space/<link_id>/download/<filename>')
 def download_file(link_id, filename):
     """Скачивание файла из временного хранилища"""

@@ -215,6 +215,11 @@
                         Использовано: {{ '%.2f' % used_space }} MB из 500 MB
                     </div>
                 </div>
+                <div class="mt-3 d-flex justify-content-end">
+                    <button id="delete-storage" class="btn btn-danger">
+                        <i class="fas fa-trash"></i> Удалить хранилище
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -493,6 +498,28 @@
             }
             
             location.reload();
+        });
+
+        document.getElementById('delete-storage').addEventListener('click', async function() {
+            if (!confirm('Вы уверены, что хотите удалить все файлы и освободить пространство хранилища?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/space/${linkId}/delete-all`, {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Ошибка при удалении всех файлов');
+                }
+                
+                location.reload();
+            } catch (error) {
+                console.error('Ошибка:', error);
+                alert(`Ошибка при удалении всех файлов: ${error.message}`);
+            }
         });
 
         document.addEventListener('DOMContentLoaded', function() {
