@@ -539,9 +539,5 @@ if __name__ == '__main__':
     cleanup_thread.start()
     logger.info("Запущен поток периодической очистки истекших хранилищ")
     
-    # Получаем настройки из переменных окружения или используем значения по умолчанию
-    host = os.environ.get('FLASK_HOST', '0.0.0.0')
-    port = int(os.environ.get('FLASK_PORT', 5000))
-    
     # Запускаем сервер
-    app.run(host=host, port=port) 
+    app.run(host='0.0.0.0', port=5000) 
