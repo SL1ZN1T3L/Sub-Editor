@@ -434,19 +434,65 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not check_user_plus_rights(update.effective_user.id):
             await update.message.reply_text("У вас нет прав для использования этой функции.")
             return MENU
-        # Создаем клавиатуру с выбором срока хранения
-        keyboard = [
-            ['1 час', '6 часов'],
-            ['12 часов', '24 часа'],
-            ['3 дня', '7 дней'],
-            ['14 дней', '30 дней'],
-            ['Назад']
-        ]
-        await update.message.reply_text(
-            "Выберите срок хранения временного хранилища:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-        return TEMP_LINK_DURATION
+            
+        try:
+            # Проверяем наличие активного хранилища
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                SELECT link_id, expires_at 
+                FROM temp_links 
+                WHERE user_id = ? AND expires_at > datetime('now')
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (update.effective_user.id,))
+            active_storage = c.fetchone()
+            
+            if active_storage:
+                link_id, expires_at = active_storage
+                storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+                
+                # Создаем клавиатуру с опцией удаления
+                keyboard = [
+                    [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                    [KeyboardButton("Назад")]
+                ]
+                markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                await update.message.reply_text(
+                    f"У вас уже есть активное временное хранилище!\n\n"
+                    f"🔗 Ссылка: {storage_url}\n"
+                    f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
+                    f"Вы можете продолжать использовать это хранилище или удалить его.",
+                    reply_markup=markup
+                )
+                context.user_data['current_storage'] = link_id
+                return TEMP_LINK
+                
+            # Если активного хранилища нет, предлагаем создать новое
+            keyboard = [
+                ['1 час', '6 часов'],
+                ['12 часов', '24 часа'],
+                ['3 дня', '7 дней'],
+                ['14 дней', '30 дней'],
+                ['Назад']
+            ]
+            await update.message.reply_text(
+                "Выберите срок хранения временного хранилища:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
+            return TEMP_LINK_DURATION
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проверке хранилища: {str(e)}")
+            await update.message.reply_text(
+                "Произошла ошибка при проверке хранилища. Попробуйте позже.",
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+        finally:
+            if 'conn' in locals():
+                conn.close()
     elif text == 'ℹ️ Помощь':
         await update.message.reply_text(
             "📚 *Помощь по использованию бота*\n\n"
@@ -1288,7 +1334,7 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"У вас уже есть активное временное хранилище!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия до: {expires_at}\n\n"
+                f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
                 f"Вы можете продолжать использовать это хранилище или дождаться окончания его срока действия для создания нового.",
                 reply_markup=get_menu_keyboard(update.effective_user.id)
             )
@@ -1372,7 +1418,7 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(
                 f"У вас уже есть активное временное хранилище!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия до: {expires_at}\n\n"
+                f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
                 f"Вы можете продолжать использовать это хранилище или удалить его.",
                 reply_markup=markup
             )
@@ -1417,7 +1463,7 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             f"✅ Временное хранилище создано!\n\n"
             f"🔗 Ссылка: {storage_url}\n"
             f"⏱ Срок действия: {duration_text}\n\n"
-            f"⚠️ Хранилище будет доступно до {expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"⚠️ Хранилище будет доступно до {format_datetime(expires_at)}\n\n"
             f"Вы можете загружать файлы через веб-интерфейс.",
             reply_markup=markup
         )
@@ -1433,6 +1479,168 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         
         await update.message.reply_text(
             "Произошла ошибка при создании временного хранилища. Попробуйте снова.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+        
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Продление срока хранения временного хранилища"""
+    if update.message.text == "Назад":
+        # Возвращаемся к управлению хранилищем
+        link_id = context.user_data.get('extend_storage')
+        if link_id:
+            # Создаем клавиатуру для управления хранилищем
+            keyboard = [
+                [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                [KeyboardButton("Назад")]
+            ]
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            # Получаем информацию о хранилище
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
+            result = c.fetchone()
+            
+            if not result:
+                await update.message.reply_text(
+                    "Хранилище не найдено или уже удалено.", 
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+                conn.close()
+                return MENU
+                
+            expires_at = result[0]
+            conn.close()
+            
+            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+            
+            await update.message.reply_text(
+                f"Управление хранилищем:\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
+                f"Выберите действие:",
+                reply_markup=markup
+            )
+            
+            context.user_data['current_storage'] = link_id
+            if 'extend_storage' in context.user_data:
+                del context.user_data['extend_storage']
+                
+            return TEMP_LINK
+        
+        # Если нет активного хранилища, возвращаемся в главное меню
+        await show_menu(update, context)
+        return MENU
+    
+    # Определяем срок продления в часах
+    duration_map = {
+        '1 час': 1,
+        '6 часов': 6,
+        '12 часов': 12,
+        '24 часа': 24,
+        '3 дня': 72,
+        '7 дней': 168,
+        '14 дней': 336,
+        '30 дней': 720
+    }
+    
+    if update.message.text not in duration_map:
+        await update.message.reply_text(
+            "Пожалуйста, выберите срок продления из предложенных вариантов."
+        )
+        return TEMP_LINK_EXTEND
+    
+    try:
+        link_id = context.user_data.get('extend_storage')
+        if not link_id:
+            await update.message.reply_text(
+                "Не найдено активное хранилище для продления.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+            
+        # Получаем текущий срок действия
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT expires_at FROM temp_links WHERE link_id = ? AND user_id = ?', 
+                 (link_id, update.effective_user.id))
+        result = c.fetchone()
+        
+        if not result:
+            await update.message.reply_text(
+                "Хранилище не найдено или уже удалено.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+            
+        # Разбираем дату
+        date_str = result[0]
+        current_expires_at = datetime.strptime(format_datetime(date_str), '%Y-%m-%d %H:%M:%S')
+        
+        # Проверяем, не истек ли срок хранилища
+        if current_expires_at <= datetime.now():
+            await update.message.reply_text(
+                "Срок действия хранилища уже истек. Создайте новое хранилище.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+            
+        # Рассчитываем новый срок действия
+        duration_hours = duration_map[update.message.text]
+        new_expires_at = current_expires_at + timedelta(hours=duration_hours)
+        
+        # Обновляем срок действия в базе данных
+        c.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
+                 (new_expires_at, link_id))
+        conn.commit()
+        
+        # Форматируем текст о сроке продления
+        duration_text = ""
+        if duration_hours < 24:
+            duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+        elif duration_hours < 48:
+            duration_text = "1 день"
+        else:
+            days = duration_hours // 24
+            duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
+        
+        # Создаем клавиатуру для управления хранилищем
+        keyboard = [
+            [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+            [KeyboardButton("Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+        
+        await update.message.reply_text(
+            f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
+            f"🔗 Ссылка: {storage_url}\n"
+            f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}\n\n"
+            f"Выберите действие:",
+            reply_markup=markup
+        )
+        
+        # Обновляем данные пользователя
+        context.user_data['current_storage'] = link_id
+        if 'extend_storage' in context.user_data:
+            del context.user_data['extend_storage']
+        
+        return TEMP_LINK
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        error_message = f"Ошибка при продлении срока хранилища: {str(e)}"
+        logger.error(error_message)
+        
+        await update.message.reply_text(
+            "Произошла ошибка при продлении срока хранилища. Попробуйте снова.",
             reply_markup=get_menu_keyboard(update.effective_user.id)
         )
         return MENU
@@ -1527,183 +1735,6 @@ async def delete_user_storage(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await update.message.reply_text(
             "Произошла ошибка при удалении хранилища. Попробуйте снова.",
-            reply_markup=get_menu_keyboard(update.effective_user.id)
-        )
-        return MENU
-        
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
-async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Продление срока хранения временного хранилища"""
-    if update.message.text == "Назад":
-        # Возвращаемся к управлению хранилищем
-        link_id = context.user_data.get('extend_storage')
-        if link_id:
-            # Создаем клавиатуру для управления хранилищем
-            keyboard = [
-                [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
-                [KeyboardButton("Назад")]
-            ]
-            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            # Получаем информацию о хранилище
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
-            result = c.fetchone()
-            
-            if not result:
-                await update.message.reply_text(
-                    "Хранилище не найдено или уже удалено.", 
-                    reply_markup=get_menu_keyboard(update.effective_user.id)
-                )
-                conn.close()
-                return MENU
-                
-            # Обрабатываем дату, удаляя миллисекунды если они есть
-            expires_at = result[0]
-            if '.' in expires_at:
-                expires_at = expires_at.split('.')[0]
-                
-            conn.close()
-            
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
-            
-            await update.message.reply_text(
-                f"Управление хранилищем:\n\n"
-                f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия до: {expires_at}\n\n"
-                f"Выберите действие:",
-                reply_markup=markup
-            )
-            
-            context.user_data['current_storage'] = link_id
-            if 'extend_storage' in context.user_data:
-                del context.user_data['extend_storage']
-                
-            return TEMP_LINK
-        
-        # Если нет активного хранилища, возвращаемся в главное меню
-        await show_menu(update, context)
-        return MENU
-    
-    # Определяем срок продления в часах
-    duration_map = {
-        '1 час': 1,
-        '6 часов': 6,
-        '12 часов': 12,
-        '24 часа': 24,
-        '3 дня': 72,
-        '7 дней': 168,
-        '14 дней': 336,
-        '30 дней': 720
-    }
-    
-    if update.message.text not in duration_map:
-        await update.message.reply_text(
-            "Пожалуйста, выберите срок продления из предложенных вариантов."
-        )
-        return TEMP_LINK_EXTEND
-    
-    try:
-        link_id = context.user_data.get('extend_storage')
-        if not link_id:
-            await update.message.reply_text(
-                "Не найдено активное хранилище для продления.", 
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            return MENU
-            
-        # Получаем текущий срок действия
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('SELECT expires_at FROM temp_links WHERE link_id = ? AND user_id = ?', 
-                 (link_id, update.effective_user.id))
-        result = c.fetchone()
-        
-        if not result:
-            await update.message.reply_text(
-                "Хранилище не найдено или уже удалено.", 
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            return MENU
-            
-        # Разбираем дату, учитывая возможное наличие миллисекунд
-        try:
-            date_str = result[0]
-            # Удаляем миллисекунды, если они есть
-            if '.' in date_str:
-                date_str = date_str.split('.')[0]
-            current_expires_at = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-        except Exception as e:
-            logger.error(f"Ошибка при парсинге даты '{result[0]}': {str(e)}")
-            await update.message.reply_text(
-                "Произошла ошибка при обработке даты хранилища. Попробуйте снова.",
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            return MENU
-        
-        # Проверяем, не истек ли срок хранилища
-        if current_expires_at <= datetime.now():
-            await update.message.reply_text(
-                "Срок действия хранилища уже истек. Создайте новое хранилище.", 
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            return MENU
-            
-        # Рассчитываем новый срок действия
-        duration_hours = duration_map[update.message.text]
-        new_expires_at = current_expires_at + timedelta(hours=duration_hours)
-        
-        # Обновляем срок действия в базе данных
-        c.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
-                 (new_expires_at, link_id))
-        conn.commit()
-        
-        # Форматируем текст о сроке продления
-        duration_text = ""
-        if duration_hours < 24:
-            duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
-        elif duration_hours < 48:
-            duration_text = "1 день"
-        else:
-            days = duration_hours // 24
-            duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
-        
-        # Создаем клавиатуру для управления хранилищем
-        keyboard = [
-            [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
-            [KeyboardButton("Назад")]
-        ]
-        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
-        
-        await update.message.reply_text(
-            f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
-            f"🔗 Ссылка: {storage_url}\n"
-            f"⏱ Новый срок действия до: {new_expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"Выберите действие:",
-            reply_markup=markup
-        )
-        
-        # Обновляем данные пользователя
-        context.user_data['current_storage'] = link_id
-        if 'extend_storage' in context.user_data:
-            del context.user_data['extend_storage']
-        
-        return TEMP_LINK
-        
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        error_message = f"Ошибка при продлении срока хранилища: {str(e)}"
-        logger.error(error_message)
-        
-        await update.message.reply_text(
-            "Произошла ошибка при продлении срока хранилища. Попробуйте снова.",
             reply_markup=get_menu_keyboard(update.effective_user.id)
         )
         return MENU
@@ -1905,6 +1936,14 @@ def get_user_active_storage(user_id):
         return result if result else None
     finally:
         conn.close()
+
+def format_datetime(dt):
+    """Форматирование даты без миллисекунд"""
+    if isinstance(dt, str):
+        if '.' in dt:
+            dt = dt.split('.')[0]
+        return dt
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
 
 def main():
     try:

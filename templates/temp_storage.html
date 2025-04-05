@@ -261,9 +261,83 @@
             background-color: #c82333;
             color: white;
         }
+        /* Стили для всплывающих уведомлений */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+
+        .toast {
+            background-color: var(--card-bg);
+            color: var(--text-color);
+            padding: 12px 24px;
+            border-radius: 8px;
+            margin-top: 10px;
+            box-shadow: 0 4px 12px var(--shadow-color);
+            display: flex;
+            align-items: center;
+            animation: slideIn 0.3s ease-out;
+            border: 1px solid var(--border-color);
+            max-width: 400px;
+        }
+
+        .toast.error {
+            border-left: 4px solid #e74c3c;
+        }
+
+        .toast.success {
+            border-left: 4px solid #2ecc71;
+        }
+
+        .toast-icon {
+            margin-right: 12px;
+            font-size: 20px;
+        }
+
+        .toast-message {
+            flex-grow: 1;
+            font-size: 14px;
+        }
+
+        .toast-close {
+            cursor: pointer;
+            opacity: 0.7;
+            margin-left: 12px;
+            font-size: 18px;
+        }
+
+        .toast-close:hover {
+            opacity: 1;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+        }
     </style>
 </head>
 <body>
+    <!-- Добавляем контейнер для уведомлений -->
+    <div class="toast-container"></div>
     <button class="theme-switch" title="Переключить тему">
         <i class="fas fa-moon"></i>
     </button>
@@ -507,22 +581,18 @@
                     method: 'POST'
                 });
                 
-                let data;
-                const contentType = response.headers.get('content-type');
-                if (contentType && contentType.includes('application/json')) {
-                    data = await response.json();
-                } else {
-                    throw new Error('Получен неверный ответ от сервера');
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Ошибка при удалении файла');
                 }
                 
-                if (response.ok) {
-                    location.reload();
-                } else {
-                    alert(data.error || 'Ошибка при удалении файла');
+                if (data.success) {
+                    showToast('Файл успешно удален', 'success');
+                    setTimeout(() => location.reload(), 1000);
                 }
             } catch (error) {
-                console.error('Ошибка:', error);
-                alert(`Ошибка при удалении файла: ${error.message}`);
+                handleError(error);
             }
         }
 
@@ -688,6 +758,75 @@
             
             updateButtonsVisibility();
         });
+
+        // Функция для показа уведомлений
+        function showToast(message, type = 'error') {
+            const container = document.querySelector('.toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            
+            const icon = type === 'error' ? '❌' : '✅';
+            
+            toast.innerHTML = `
+                <span class="toast-icon">${icon}</span>
+                <span class="toast-message">${message}</span>
+                <span class="toast-close">×</span>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Обработчик для кнопки закрытия
+            toast.querySelector('.toast-close').addEventListener('click', () => {
+                toast.style.animation = 'slideOut 0.3s ease-out forwards';
+                setTimeout(() => container.removeChild(toast), 300);
+            });
+            
+            // Автоматическое закрытие через 5 секунд
+            setTimeout(() => {
+                if (container.contains(toast)) {
+                    toast.style.animation = 'slideOut 0.3s ease-out forwards';
+                    setTimeout(() => container.removeChild(toast), 300);
+                }
+            }, 5000);
+        }
+
+        // Обновляем обработку ошибок в существующем коде
+        function handleError(error) {
+            console.error('Ошибка:', error);
+            showToast(error.message || 'Произошла ошибка при выполнении операции');
+        }
+
+        // Обновляем fetch запросы для использования showToast
+        async function uploadChunk(file, chunkNumber, totalChunks) {
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('chunk_number', chunkNumber);
+                formData.append('total_chunks', totalChunks);
+                
+                const response = await fetch(`/space/${linkId}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Ошибка при загрузке файла');
+                }
+                
+                if (data.success) {
+                    updateProgress(file.name, ((chunkNumber + 1) / totalChunks) * 100);
+                    if (chunkNumber === totalChunks - 1) {
+                        showToast('Файл успешно загружен', 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }
+                }
+            } catch (error) {
+                handleError(error);
+                throw error;
+            }
+        }
     </script>
 </body>
 </html> 

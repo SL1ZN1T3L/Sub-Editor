@@ -35,7 +35,7 @@
             <tr>
                 <td>{{ file.name }}</td>
                 <td>{{ "%.2f"|format(file.size / (1024 * 1024)) }} MB</td>
-                <td>{{ file.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>{{ file.modified }}</td>
                 <td>
                     <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}" 
                        class="btn btn-download" title="Скачать">
@@ -52,6 +52,8 @@
         </tbody>
     </table>
 </div>
+
+<div class="expires-at">Срок действия до: {{ expires_at }}</div>
 
 <script>
     window.linkId = '{{ link_id }}';

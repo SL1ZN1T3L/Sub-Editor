@@ -330,16 +330,25 @@ def upload_file(link_id):
 def delete_file(link_id, filename):
     """Удаление файла из временного хранилища"""
     try:
+        # Проверяем валидность хранилища
         if not is_temp_storage_valid(link_id):
+            logger.error(f"Попытка удаления файла из недействительного хранилища: {link_id}")
             return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
             
         file_path = os.path.join(get_temp_storage_path(link_id), secure_filename(filename))
         if os.path.exists(file_path):
-            os.remove(file_path)
-            return jsonify({'success': True})
-        return jsonify({'error': 'Файл не найден'}), 404
+            try:
+                os.remove(file_path)
+                logger.info(f"Файл {filename} успешно удален из хранилища {link_id}")
+                return jsonify({'success': True})
+            except Exception as e:
+                logger.error(f"Ошибка при удалении файла {filename}: {str(e)}")
+                return jsonify({'error': 'Не удалось удалить файл'}), 500
+        else:
+            logger.warning(f"Попытка удаления несуществующего файла {filename} из хранилища {link_id}")
+            return jsonify({'error': 'Файл не найден'}), 404
     except Exception as e:
-        logger.error(f"Ошибка при удалении файла: {str(e)}")
+        logger.error(f"Ошибка при удалении файла {filename}: {str(e)}")
         return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
 
 @app.route('/space/<link_id>/delete-all', methods=['POST'])
@@ -530,5 +539,9 @@ if __name__ == '__main__':
     cleanup_thread.start()
     logger.info("Запущен поток периодической очистки истекших хранилищ")
     
+    # Получаем настройки из переменных окружения или используем значения по умолчанию
+    host = os.environ.get('FLASK_HOST', '0.0.0.0')
+    port = int(os.environ.get('FLASK_PORT', 5000))
+    
     # Запускаем сервер
-    app.run(host='0.0.0.0', port=5000) 
+    app.run(host=host, port=port) 
