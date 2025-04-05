@@ -745,10 +745,10 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         role = 'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'
         
         user_list += (
-            f"ID: `{user[0]}`\n"
+            f"ID: {user[0]}\n"
             f"Имя: {user[1] or 'Не указано'}\n"
             f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
-            f"Роль: {'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'}\n"           
+            f"Роль: {role}\n"           
             f"Обработано файлов: {user[4]}\n"
             f"Объединено подписок: {user[5]}\n"
             f"Создано QR-кодов: {user[6]}\n\n"
@@ -766,8 +766,7 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         user_list + "\nВыберите пользователя для управления:", 
-        reply_markup=markup,
-        parse_mode='Markdown'
+        reply_markup=markup
     )
     
     return USER_MANAGEMENT
