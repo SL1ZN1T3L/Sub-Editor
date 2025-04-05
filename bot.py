@@ -59,7 +59,7 @@ DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолча�
 MAX_TEMP_LINK_HOURS = 720  # Максимальное время хранения файла в часах (30 дней)
 
 # Состояния разговора
-CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA, TEMP_LINK, TEMP_LINK_DURATION, TEMP_LINK_EXTEND = range(14)
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA, TEMP_LINK, TEMP_LINK_DURATION, TEMP_LINK_EXTEND, STORAGE_MANAGEMENT = range(15)
 
 # Добавим константы для ролей
 class UserRole:
@@ -598,6 +598,7 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard=[
                 [KeyboardButton(text="Написать всем пользователям")],
                 [KeyboardButton(text="Управление пользователями")],
+                [KeyboardButton(text="Управление хранилищами")],
                 [KeyboardButton(text="Назад")]
             ],
             resize_keyboard=True
@@ -704,6 +705,8 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         return OTHER_COMMANDS
     elif text == "Управление пользователями":
         return await show_users_list(update, context)
+    elif text == "Управление хранилищами":
+        return await show_storage_list(update, context)
     else:
         # Отправляем сообщение всем пользователям
         conn = sqlite3.connect(DB_PATH)
@@ -1944,6 +1947,221 @@ def format_datetime(dt):
         return dt
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
+async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список активных хранилищ"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Получаем список активных хранилищ с информацией о пользователях
+        c.execute('''
+            SELECT t.link_id, t.user_id, u.username, t.expires_at, t.created_at
+            FROM temp_links t
+            JOIN users u ON t.user_id = u.user_id
+            WHERE t.expires_at > datetime('now')
+            ORDER BY t.created_at DESC
+        ''')
+        
+        storages = c.fetchall()
+        conn.close()
+        
+        if not storages:
+            await update.message.reply_text(
+                "Активных хранилищ не найдено.",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            return STORAGE_MANAGEMENT
+        
+        # Создаем клавиатуру с хранилищами
+        keyboard = []
+        storage_info = {}
+        
+        for storage in storages:
+            link_id, user_id, username, expires_at, created_at = storage
+            username = username or f"ID: {user_id}"
+            storage_text = f"{username} (до {format_datetime(expires_at)})"
+            keyboard.append([KeyboardButton(text=storage_text)])
+            storage_info[storage_text] = {
+                'link_id': link_id,
+                'user_id': user_id,
+                'expires_at': expires_at
+            }
+        
+        keyboard.append([KeyboardButton(text="Назад")])
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Сохраняем информацию о хранилищах в контексте
+        context.user_data['storage_info'] = storage_info
+        
+        await update.message.reply_text(
+            "Выберите хранилище для управления:",
+            reply_markup=markup
+        )
+        
+        return STORAGE_MANAGEMENT
+        
+    except Exception as e:
+        error_message = f"Ошибка при получении списка хранилищ: {str(e)}"
+        logger.error(error_message)
+        await update.message.reply_text(
+            "Произошла ошибка при получении списка хранилищ.",
+            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+        )
+        return STORAGE_MANAGEMENT
+
+async def process_storage_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка управления хранилищами"""
+    text = update.message.text
+    
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+    
+    storage_info = context.user_data.get('storage_info', {})
+    
+    if text in storage_info:
+        # Хранилище выбрано, показываем действия
+        storage_data = storage_info[text]
+        context.user_data['selected_storage'] = storage_data
+        
+        keyboard = [
+            [KeyboardButton(text="🗑️ Удалить хранилище")],
+            [KeyboardButton(text="🔄 Продлить срок")],
+            [KeyboardButton(text="Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await update.message.reply_text(
+            f"Управление хранилищем:\n\n"
+            f"🔗 ID: {storage_data['link_id']}\n"
+            f"👤 Пользователь: {text.split(' (')[0]}\n"
+            f"⏱ Срок действия до: {format_datetime(storage_data['expires_at'])}\n\n"
+            f"Выберите действие:",
+            reply_markup=markup
+        )
+        
+        return STORAGE_MANAGEMENT
+    
+    elif text == "🗑️ Удалить хранилище":
+        storage_data = context.user_data.get('selected_storage')
+        if not storage_data:
+            await update.message.reply_text("Сначала выберите хранилище.")
+            return await show_storage_list(update, context)
+        
+        try:
+            # Удаляем файлы хранилища
+            storage_path = os.path.join(BOT_DIR, 'temp_storage', storage_data['link_id'])
+            if os.path.exists(storage_path):
+                shutil.rmtree(storage_path)
+            
+            # Удаляем запись из базы данных
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('DELETE FROM temp_links WHERE link_id = ?', (storage_data['link_id'],))
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(
+                "✅ Хранилище успешно удалено!",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            
+            # Очищаем выбранное хранилище
+            if 'selected_storage' in context.user_data:
+                del context.user_data['selected_storage']
+            
+            return await show_storage_list(update, context)
+            
+        except Exception as e:
+            error_message = f"Ошибка при удалении хранилища: {str(e)}"
+            logger.error(error_message)
+            await update.message.reply_text(
+                "Произошла ошибка при удалении хранилища.",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            return STORAGE_MANAGEMENT
+    
+    elif text == "🔄 Продлить срок":
+        storage_data = context.user_data.get('selected_storage')
+        if not storage_data:
+            await update.message.reply_text("Сначала выберите хранилище.")
+            return await show_storage_list(update, context)
+        
+        # Создаем клавиатуру с выбором срока продления
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['3 дня', '7 дней'],
+            ['14 дней', '30 дней'],
+            ['Назад']
+        ]
+        
+        await update.message.reply_text(
+            "Выберите срок, на который хотите продлить хранилище:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        
+        return STORAGE_MANAGEMENT
+    
+    elif text in ['1 час', '6 часов', '12 часов', '24 часа', '3 дня', '7 дней', '14 дней', '30 дней']:
+        storage_data = context.user_data.get('selected_storage')
+        if not storage_data:
+            await update.message.reply_text("Сначала выберите хранилище.")
+            return await show_storage_list(update, context)
+        
+        # Определяем срок продления в часах
+        duration_map = {
+            '1 час': 1,
+            '6 часов': 6,
+            '12 часов': 12,
+            '24 часа': 24,
+            '3 дня': 72,
+            '7 дней': 168,
+            '14 дней': 336,
+            '30 дней': 720
+        }
+        
+        try:
+            duration_hours = duration_map[text]
+            new_expires_at = datetime.now() + timedelta(hours=duration_hours)
+            
+            # Обновляем срок действия в базе данных
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
+                     (new_expires_at, storage_data['link_id']))
+            conn.commit()
+            conn.close()
+            
+            # Форматируем текст о сроке продления
+            duration_text = ""
+            if duration_hours < 24:
+                duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+            elif duration_hours < 48:
+                duration_text = "1 день"
+            else:
+                days = duration_hours // 24
+                duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
+            
+            await update.message.reply_text(
+                f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
+                f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            
+            return await show_storage_list(update, context)
+            
+        except Exception as e:
+            error_message = f"Ошибка при продлении срока хранилища: {str(e)}"
+            logger.error(error_message)
+            await update.message.reply_text(
+                "Произошла ошибка при продлении срока хранилища.",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            return STORAGE_MANAGEMENT
+    
+    return STORAGE_MANAGEMENT
+
 def main():
     try:
         # Создаем необходимые директории
@@ -2001,6 +2219,7 @@ def main():
                 ],
                 TEMP_LINK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temp_link_duration)],
                 TEMP_LINK_EXTEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, extend_storage_duration)],
+                STORAGE_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_storage_management)],
             },
             fallbacks=[
                 CommandHandler('start', start),
