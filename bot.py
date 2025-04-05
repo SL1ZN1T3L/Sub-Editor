@@ -12,6 +12,7 @@ import qrcode
 import operator
 import logging
 import shutil
+import time
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -74,6 +75,17 @@ OPERATORS = {
     '*': operator.mul
 }
 
+# Глобальные переменные для защиты от спама
+user_action_times = {}  # Словарь для хранения времени последних действий
+user_action_counts = {}  # Словарь для подсчета действий за период
+user_spam_warnings = {}  # Словарь для хранения предупреждений о спаме
+banned_users = set()  # Множество для хранения ID заблокированных пользователей
+SPAM_COOLDOWN = 0.5  # Минимальное время между действиями в секундах
+MAX_ACTIONS_PER_MINUTE = 20  # Максимальное количество действий в минуту
+BAN_THRESHOLD = 50  # Порог для автоматической блокировки
+WARNING_THRESHOLD = 10  # Порог для предупреждения администратора (уменьшен)
+ADMIN_NOTIFICATION_INTERVAL = 60  # Интервал между уведомлениями администратора в секундах
+
 def ensure_directories():
     """Создание необходимых директорий с обработкой ошибок"""
     directories = [TEMP_DIR, LOG_DIR, TEMP_LINKS_DIR]
@@ -107,86 +119,59 @@ def log_error(user_id, error_message):
         print(f"[{timestamp}] User {user_id}: {error_message}")
 
 def setup_database():
-    """Создание и проверка базы данных"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Создаем таблицу users с полем role вместо is_admin
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                is_verified BOOLEAN DEFAULT FALSE,
-                role TEXT DEFAULT 'user',
-                usage_count INTEGER DEFAULT 0,
-                merged_count INTEGER DEFAULT 0,
-                qr_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        logger.info("Таблица users создана или уже существует")
-        
-        # Создаем таблицу для статуса бота если её нет
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS bot_status (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                status TEXT DEFAULT 'enabled',
-                lines_to_keep INTEGER DEFAULT 10
-            )
-        ''')
-        logger.info("Таблица bot_status создана или уже существует")
-        
-        # Создаем таблицу для персональных настроек пользователей
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INTEGER PRIMARY KEY,
-                lines_to_keep INTEGER DEFAULT 10
-            )
-        ''')
-        logger.info("Таблица user_settings создана или уже существует")
-
-        # Создаем таблицу для временных ссылок
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS temp_links (
-                link_id TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                expires_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-        ''')
-        logger.info("Таблица temp_links создана или уже существует")
-        
-        # Создаем таблицу для файлов временных ссылок
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS temp_link_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                link_id TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                FOREIGN KEY (link_id) REFERENCES temp_links(link_id) ON DELETE CASCADE
-            )
-        ''')
-        logger.info("Таблица temp_link_files создана или уже существует")
-        
-        # Проверяем, есть ли запись о статусе бота
-        c.execute('SELECT COUNT(*) FROM bot_status')
-        if c.fetchone()[0] == 0:
-            c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
-            logger.info("Добавлена запись о статусе бота")
-        
-        conn.commit()
-        logger.info("База данных успешно инициализирована")
-        
-    except sqlite3.Error as e:
-        conn.rollback()
-        error_message = f"Ошибка при создании базы данных: {str(e)}"
-        logger.error(error_message)
-        raise
-        
-    finally:
-        conn.close()
+    """Настройка базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Создание таблицы users
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY,
+                  username TEXT,
+                  is_verified BOOLEAN DEFAULT FALSE,
+                  role TEXT DEFAULT 'user',
+                  usage_count INTEGER DEFAULT 0,
+                  merged_count INTEGER DEFAULT 0,
+                  qr_count INTEGER DEFAULT 0,
+                  last_action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  is_banned BOOLEAN DEFAULT FALSE)''')
+    
+    # Проверка наличия поля is_banned и его добавление, если отсутствует
+    c.execute("PRAGMA table_info(users)")
+    columns = [column[1] for column in c.fetchall()]
+    if 'is_banned' not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
+    
+    # Создание таблицы bot_status
+    c.execute('''CREATE TABLE IF NOT EXISTS bot_status
+                 (key TEXT PRIMARY KEY,
+                  value TEXT)''')
+    
+    # Создание таблицы user_settings
+    c.execute('''CREATE TABLE IF NOT EXISTS user_settings
+                 (user_id INTEGER PRIMARY KEY,
+                  language TEXT DEFAULT 'ru',
+                  FOREIGN KEY (user_id) REFERENCES users(user_id))''')
+    
+    # Создание таблицы temp_links
+    c.execute('''CREATE TABLE IF NOT EXISTS temp_links
+                 (link_id TEXT PRIMARY KEY,
+                  user_id INTEGER,
+                  expires_at TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (user_id) REFERENCES users(user_id))''')
+    
+    # Создание таблицы temp_link_files
+    c.execute('''CREATE TABLE IF NOT EXISTS temp_link_files
+                 (file_id TEXT PRIMARY KEY,
+                  link_id TEXT,
+                  file_path TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (link_id) REFERENCES temp_links(link_id))''')
+    
+    conn.commit()
+    conn.close()
+    logger.info("База данных успешно инициализирована")
 
 def is_user_verified(user_id):
     """Проверка верификации пользователя"""
@@ -266,7 +251,7 @@ def get_menu_keyboard(user_id):
     
     # Добавляем кнопку временных ссылок только для User+ и Админов
     if check_user_plus_rights(user_id):
-        keyboard.insert(2, ['🔗 Создать временную ссылку'])
+        keyboard.insert(2, ['🔗 Создать временное хранилище'])
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -283,6 +268,9 @@ def get_qr_type_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_access(update, context):
+        return ConversationHandler.END
+        
     user_id = update.effective_user.id
     username = update.effective_user.username
     
@@ -380,6 +368,9 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MENU
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_access(update, context):
+        return MENU
+        
     if not is_bot_enabled() and not is_admin(update.effective_user.id):
         await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
         return MENU
@@ -430,7 +421,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_qr_type_keyboard()
         )
         return QR_TYPE
-    elif text == '🔗 Создать временную ссылку':
+    elif text == '🔗 Создать временное хранилище':
         if not check_user_plus_rights(update.effective_user.id):
             await update.message.reply_text("У вас нет прав для использования этой функции.")
             return MENU
@@ -499,7 +490,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📤 *Обработать файл* - загрузите файл со ссылками, и бот вернет последние N ссылок\n"
             "🔄 *Объединить подписки* - объединяет несколько подписок в одну\n"
             "📱 *Создать QR-код* - создает QR-код для различных типов данных\n"
-            "🔗 *Создать временную ссылку* - создает хранилище для файлов с возможностью выбора срока хранения от 1 часа до 30 дней, с возможностью продления\n"
+            "🔗 *Создать временное хранилище* - создает хранилище для файлов с возможностью выбора срока хранения от 1 часа до 30 дней, с возможностью продления\n"
             "📊 *Статистика* - показывает вашу статистику использования\n"
             "⚙️ *Настройки* - настройки бота\n\n"
             "Для начала работы просто выберите нужную функцию в меню.",
@@ -729,14 +720,19 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
 
 async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список пользователей с кнопками"""
+    if not await check_user_access(update, context):
+        return USER_MANAGEMENT
+        
     users = get_all_users()
     if not users:
         await update.message.reply_text("В базе данных нет пользователей.")
         return OTHER_COMMANDS
     
     verified_count = sum(1 for user in users if user[2])
+    banned_count = sum(1 for user in users if user[7])  # is_banned поле
     
-    user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
+    user_list = f"Всего верифицированных пользователей: {verified_count}\n"
+    user_list += f"Заблокированных пользователей: {banned_count}\n\nСписок пользователей:\n\n"
     
     # Создаем клавиатуру с именами пользователей
     keyboard = []
@@ -746,18 +742,20 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = user[0]
         username = user[1] or f"ID: {user_id}"
         role = 'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'
+        is_banned = user[7]  # is_banned поле
         
         user_list += (
             f"ID: {user[0]}\n"
             f"Имя: {user[1] or 'Не указано'}\n"
             f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
-            f"Роль: {role}\n"           
+            f"Роль: {role}\n"
+            f"Статус: {'Заблокирован' if is_banned else 'Активен'}\n"
             f"Обработано файлов: {user[4]}\n"
             f"Объединено подписок: {user[5]}\n"
             f"Создано QR-кодов: {user[6]}\n\n"
         )
         
-        button_text = f"{username} ({role})"
+        button_text = f"{username} ({role}){' [ЗАБЛОКИРОВАН]' if is_banned else ''}"
         keyboard.append([KeyboardButton(text=button_text)])
         users_dict[button_text] = user_id
 
@@ -775,13 +773,25 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return USER_MANAGEMENT
 
 async def process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка управления пользователями"""
+    # Для администраторов пропускаем проверку спама
+    if is_admin(update.effective_user.id):
+        return await _process_user_management(update, context)
+    
+    if not await check_user_access(update, context):
+        return USER_MANAGEMENT
+    
+    return await _process_user_management(update, context)
+
+async def _process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Внутренняя функция обработки управления пользователями"""
     text = update.message.text
     
     if text == "Назад":
         await settings_command(update, context)
         return SETTINGS
         
-    if text in ["Убрать из базы", "Выдать пользователя", "Выдать пользователя+", "Выдать админа"]:
+    if text in ["Убрать из базы", "Выдать пользователя", "Выдать пользователя+", "Выдать админа", "Заблокировать", "Разблокировать"]:
         user_id = context.user_data.get('selected_user_id')
         if not user_id:
             await update.message.reply_text("Сначала выберите пользователя.")
@@ -797,6 +807,27 @@ async def process_user_management(update: Update, context: ContextTypes.DEFAULT_
                     return await show_users_list(update, context)
                 except Exception as e:
                     await update.message.reply_text(f"Ошибка при удалении пользователя: {str(e)}")
+        elif text == "Заблокировать":
+            if user_id == update.effective_user.id:
+                await update.message.reply_text("Вы не можете заблокировать себя.")
+            else:
+                try:
+                    if await ban_user(context.bot, user_id, True):
+                        await update.message.reply_text("Пользователь заблокирован.")
+                    else:
+                        await update.message.reply_text("Ошибка при блокировке пользователя.")
+                    return await show_users_list(update, context)
+                except Exception as e:
+                    await update.message.reply_text(f"Ошибка при блокировке пользователя: {str(e)}")
+        elif text == "Разблокировать":
+            try:
+                if await ban_user(context.bot, user_id, False):
+                    await update.message.reply_text("Пользователь разблокирован.")
+                else:
+                    await update.message.reply_text("Ошибка при разблокировке пользователя.")
+                return await show_users_list(update, context)
+            except Exception as e:
+                await update.message.reply_text(f"Ошибка при разблокировке пользователя: {str(e)}")
         else:
             role = {
                 "Выдать пользователя": UserRole.USER,
@@ -820,11 +851,15 @@ async def process_user_management(update: Update, context: ContextTypes.DEFAULT_
         user_id = context.user_data['users_info'][text]
         context.user_data['selected_user_id'] = user_id
         
+        # Проверяем статус блокировки пользователя
+        is_banned = is_user_banned(user_id)
+        
         keyboard = [
             [KeyboardButton(text="Убрать из базы")],
             [KeyboardButton(text="Выдать пользователя")],
             [KeyboardButton(text="Выдать пользователя+")],
             [KeyboardButton(text="Выдать админа")],
+            [KeyboardButton(text="Заблокировать" if not is_banned else "Разблокировать")],
             [KeyboardButton(text="Назад")]
         ]
         markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1785,7 +1820,7 @@ def get_all_users():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT user_id, username, is_verified, role, 
-                 usage_count, merged_count, qr_count FROM users''')
+                 usage_count, merged_count, qr_count, is_banned FROM users''')
     users = c.fetchall()
     conn.close()
     return users
@@ -2162,6 +2197,167 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
     
     return STORAGE_MANAGEMENT
 
+def is_user_banned(user_id):
+    """Проверка, заблокирован ли пользователь"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else False
+
+async def ban_user(bot, user_id, ban=True):
+    """Блокировка/разблокировка пользователя"""
+    try:
+        # Блокируем/разблокируем в базе данных
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('UPDATE users SET is_banned = ? WHERE user_id = ?', (ban, user_id))
+        conn.commit()
+        conn.close()
+        
+        # Обновляем множество заблокированных пользователей
+        if ban:
+            banned_users.add(user_id)
+        else:
+            banned_users.discard(user_id)
+            
+        logger.info(f"Пользователь {user_id} {'заблокирован' if ban else 'разблокирован'}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при блокировке/разблокировке пользователя {user_id}: {e}")
+        return False
+
+async def notify_admins_about_spam(bot, user_id, username, action_count):
+    """Отправка уведомления администраторам о спаме"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM users WHERE role = ?', (UserRole.ADMIN,))
+        admins = c.fetchall()
+        conn.close()
+        
+        message = (
+            f"⚠️ *Обнаружен спам!*\n\n"
+            f"👤 Пользователь: {username or f'ID: {user_id}'}\n"
+            f"🆔 ID: `{user_id}`\n"
+            f"📊 Количество действий: {action_count}\n"
+            f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Рекомендуется проверить активность пользователя."
+        )
+        
+        for admin in admins:
+            try:
+                await bot.send_message(
+                    chat_id=admin[0],
+                    text=message,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления администратору {admin[0]}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомлений администраторам: {e}")
+
+def check_action_cooldown(user_id):
+    """Проверка времени между действиями пользователя с использованием кэша"""
+    # Для администраторов не применяем ограничения
+    if is_admin(user_id):
+        return True
+        
+    current_time = time.time()
+    
+    # Инициализация счетчиков для нового пользователя
+    if user_id not in user_action_times:
+        user_action_times[user_id] = current_time
+        user_action_counts[user_id] = 1
+        return True
+    
+    # Проверка времени между действиями
+    time_diff = current_time - user_action_times[user_id]
+    if time_diff < SPAM_COOLDOWN:
+        return False
+    
+    # Обновление времени последнего действия
+    user_action_times[user_id] = current_time
+    
+    # Проверка количества действий за минуту
+    if user_id not in user_action_counts:
+        user_action_counts[user_id] = 1
+    else:
+        user_action_counts[user_id] += 1
+    
+    # Очистка старых счетчиков каждую минуту
+    if time_diff > 60:
+        user_action_counts[user_id] = 1
+        if user_id in user_spam_warnings:
+            del user_spam_warnings[user_id]
+    
+    # Проверка превышения лимита действий
+    if user_action_counts[user_id] > MAX_ACTIONS_PER_MINUTE:
+        # Автоматическая блокировка при превышении порога
+        if user_action_counts[user_id] > BAN_THRESHOLD:
+            ban_user(user_id, True)
+            return False
+        
+        # Проверка необходимости отправки уведомления администратору
+        if user_action_counts[user_id] > WARNING_THRESHOLD:
+            if user_id not in user_spam_warnings or \
+               current_time - user_spam_warnings[user_id] > ADMIN_NOTIFICATION_INTERVAL:
+                user_spam_warnings[user_id] = current_time
+                return "notify_admin"
+        
+        return False
+    
+    return True
+
+async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка доступа пользователя с улучшенной защитой от спама"""
+    user_id = update.effective_user.id
+    
+    # Проверяем блокировку в памяти
+    if user_id in banned_users:
+        return False
+    
+    # Проверяем блокировку в базе данных
+    if is_user_banned(user_id):
+        banned_users.add(user_id)
+        return False
+    
+    # Для администраторов не применяем ограничения
+    if is_admin(user_id):
+        return True
+    
+    # Проверяем спам с использованием кэша
+    spam_check = check_action_cooldown(user_id)
+    
+    if spam_check == "notify_admin":
+        # Отправляем уведомление администраторам
+        await notify_admins_about_spam(
+            context.bot,
+            user_id,
+            update.effective_user.username,
+            user_action_counts[user_id]
+        )
+        return False
+    elif not spam_check:
+        # Логируем попытку спама
+        logger.warning(f"Обнаружена попытка спама от пользователя {user_id}")
+        return False
+    
+    return True
+
+def cleanup_spam_protection():
+    """Очистка старых записей в кэше защиты от спама"""
+    current_time = time.time()
+    # Удаляем записи старше 5 минут
+    for user_id in list(user_action_times.keys()):
+        if current_time - user_action_times[user_id] > 300:
+            del user_action_times[user_id]
+            if user_id in user_action_counts:
+                del user_action_counts[user_id]
+            if user_id in user_spam_warnings:
+                del user_spam_warnings[user_id]
+
 def main():
     try:
         # Создаем необходимые директории
@@ -2176,8 +2372,14 @@ def main():
         # Запускаем очистку истекших ссылок
         cleanup_expired_links()
         
+        # Запускаем очистку кэша защиты от спама
+        application.job_queue.run_repeating(cleanup_spam_protection, interval=300, first=300)
+        
         async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Восстановление меню для верифицированных пользователей"""
+            if not await check_user_access(update, context):
+                return ConversationHandler.END
+                
             if is_user_verified(update.effective_user.id):
                 if not is_bot_enabled() and not is_admin(update.effective_user.id):
                     await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
