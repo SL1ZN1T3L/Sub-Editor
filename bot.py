@@ -144,14 +144,30 @@ def setup_database():
     
     # Создание таблицы bot_status
     c.execute('''CREATE TABLE IF NOT EXISTS bot_status
-                 (key TEXT PRIMARY KEY,
-                  value TEXT)''')
+                 (id INTEGER PRIMARY KEY,
+                  status TEXT DEFAULT 'enabled',
+                  lines_to_keep INTEGER DEFAULT 10)''')
+    
+    # Проверяем наличие записи с id=1
+    c.execute('SELECT COUNT(*) FROM bot_status WHERE id = 1')
+    if c.fetchone()[0] == 0:
+        c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
     
     # Создание таблицы user_settings
     c.execute('''CREATE TABLE IF NOT EXISTS user_settings
                  (user_id INTEGER PRIMARY KEY,
                   language TEXT DEFAULT 'ru',
+                  lines_to_keep INTEGER DEFAULT 10,
+                  theme TEXT DEFAULT 'light',
                   FOREIGN KEY (user_id) REFERENCES users(user_id))''')
+    
+    # Проверяем наличие колонок в user_settings
+    c.execute("PRAGMA table_info(user_settings)")
+    columns = [column[1] for column in c.fetchall()]
+    if 'lines_to_keep' not in columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN lines_to_keep INTEGER DEFAULT 10")
+    if 'theme' not in columns:
+        c.execute("ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT 'light'")
     
     # Создание таблицы temp_links
     c.execute('''CREATE TABLE IF NOT EXISTS temp_links
@@ -166,6 +182,7 @@ def setup_database():
                  (file_id TEXT PRIMARY KEY,
                   link_id TEXT,
                   file_path TEXT,
+                  original_name TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (link_id) REFERENCES temp_links(link_id))''')
     
@@ -245,14 +262,10 @@ def get_menu_keyboard(user_id):
     keyboard = [
         ['📤 Обработать файл'],
         ['🔄 Объединить подписки', '📱 Создать QR-код'],
+        ['🔗 Создать временное хранилище'],
         ['ℹ️ Помощь', '📊 Статистика'],
         ['⚙️ Настройки']
-    ]
-    
-    # Добавляем кнопку временных ссылок только для User+ и Админов
-    if check_user_plus_rights(user_id):
-        keyboard.insert(2, ['🔗 Создать временное хранилище'])
-    
+    ]   
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_qr_type_keyboard():
@@ -422,10 +435,6 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return QR_TYPE
     elif text == '🔗 Создать временное хранилище':
-        if not check_user_plus_rights(update.effective_user.id):
-            await update.message.reply_text("У вас нет прав для использования этой функции.")
-            return MENU
-            
         try:
             # Проверяем наличие активного хранилища
             conn = sqlite3.connect(DB_PATH)
@@ -1212,7 +1221,7 @@ def generate_temp_link_id():
     chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     return ''.join(random.choice(chars) for _ in range(4))
 
-def save_temp_link(file_path, original_name, duration_hours):
+def save_temp_link(file_path, original_name, duration_hours, user_id):
     """Сохранение информации о временной ссылке"""
     try:
         link_id = generate_temp_link_id()
@@ -1224,9 +1233,9 @@ def save_temp_link(file_path, original_name, duration_hours):
         try:
             # Создаем запись о временной ссылке
             c.execute('''
-                INSERT INTO temp_links (link_id, expires_at)
-                VALUES (?, ?)
-            ''', (link_id, expires_at))
+                INSERT INTO temp_links (link_id, expires_at, user_id)
+                VALUES (?, ?, ?)
+            ''', (link_id, expires_at, user_id))
             
             # Добавляем информацию о файле
             c.execute('''
@@ -1348,10 +1357,6 @@ def get_temp_link_keyboard():
 
 async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка создания временной ссылки"""
-    if not check_user_plus_rights(update.effective_user.id):
-        await update.message.reply_text("У вас нет прав для использования этой функции.")
-        return await show_menu(update, context)
-    
     try:
         # Проверяем наличие активного хранилища
         conn = sqlite3.connect(DB_PATH)
