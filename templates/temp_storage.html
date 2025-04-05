@@ -229,6 +229,7 @@
                 <form id="uploadForm" enctype="multipart/form-data">
                     <div class="mb-3">
                         <input type="file" class="form-control" id="fileInput" multiple>
+                        <small class="text-muted">Максимум 5 файлов за одну загрузку</small>
                     </div>
                     <button type="submit" class="btn btn-primary">Загрузить</button>
                     <div class="upload-progress">
@@ -299,6 +300,14 @@
         const linkId = '{{ link_id }}';
         let totalUploadSize = 0;
         let currentUploadedSize = 0;
+        const MAX_FILES_PER_UPLOAD = 5;
+        
+        document.getElementById('fileInput').addEventListener('change', function() {
+            if (this.files.length > MAX_FILES_PER_UPLOAD) {
+                alert(`Вы можете загрузить максимум ${MAX_FILES_PER_UPLOAD} файлов за один раз`);
+                this.value = ''; // Очищаем выбранные файлы
+            }
+        });
         
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -306,6 +315,11 @@
             
             if (files.length === 0) {
                 alert('Пожалуйста, выберите файлы для загрузки');
+                return;
+            }
+            
+            if (files.length > MAX_FILES_PER_UPLOAD) {
+                alert(`Вы можете загрузить максимум ${MAX_FILES_PER_UPLOAD} файлов за один раз`);
                 return;
             }
 

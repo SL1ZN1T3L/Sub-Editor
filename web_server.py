@@ -33,6 +33,7 @@ app.config['MAX_CONTENT_LENGTH'] = None
 # Добавляем конфигурацию для загрузки файлов
 app.config['UPLOAD_CHUNK_SIZE'] = 64 * 1024  # 64 KB chunks for file reading
 app.config['MAX_CHUNK_SIZE'] = 2 * 1024 * 1024  # 2 MB maximum chunk size
+app.config['MAX_FILES_PER_UPLOAD'] = 5  # Максимальное количество файлов за одну загрузку
 
 # Пути к файлам и директориям
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -175,6 +176,17 @@ def upload_file(link_id):
         chunk_number = int(request.form.get('chunk', '0'))
         total_chunks = int(request.form.get('chunks', '1'))
         total_size = int(request.form.get('total_size', '0'))
+
+        # Проверяем количество файлов в хранилище для первого чанка
+        if chunk_number == 0:
+            storage_path = get_temp_storage_path(link_id)
+            if os.path.exists(storage_path):
+                existing_files = len([f for f in os.listdir(storage_path) if os.path.isfile(os.path.join(storage_path, f))])
+                if existing_files >= app.config['MAX_FILES_PER_UPLOAD']:
+                    logger.error(f"Превышен лимит количества файлов для загрузки: {existing_files}")
+                    return jsonify({
+                        'error': f'Превышен лимит количества файлов для одной загрузки ({app.config["MAX_FILES_PER_UPLOAD"]})'
+                    }), 400
 
         # Проверяем размер файла
         file.seek(0, 2)  # Перемещаемся в конец файла
