@@ -16,7 +16,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('web_server.log'),
+        logging.FileHandler(os.path.join('logs', 'web_server.log')),
         logging.StreamHandler()
     ]
 )
