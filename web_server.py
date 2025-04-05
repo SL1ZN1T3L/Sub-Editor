@@ -33,7 +33,9 @@ app.config['MAX_CONTENT_LENGTH'] = None
 # Добавляем конфигурацию для загрузки файлов
 app.config['UPLOAD_CHUNK_SIZE'] = 64 * 1024  # 64 KB chunks for file reading
 app.config['MAX_CHUNK_SIZE'] = 2 * 1024 * 1024  # 2 MB maximum chunk size
-app.config['MAX_FILES_PER_UPLOAD'] = 5  # Максимальное количество файлов за одну загрузку
+
+# Константа для количества строк по умолчанию
+DEFAULT_LINES_TO_KEEP = 10
 
 # Пути к файлам и директориям
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +44,32 @@ TEMP_STORAGE_DIR = os.path.join(BASE_DIR, 'temp_storage')
 
 # Создаем необходимые директории
 os.makedirs(TEMP_STORAGE_DIR, exist_ok=True)
+
+# Инициализация базы данных
+def init_db():
+    """Инициализация базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Создаем таблицу настроек пользователя, если её нет
+    c.execute('''CREATE TABLE IF NOT EXISTS user_settings
+                 (user_id INTEGER PRIMARY KEY,
+                  lines_to_keep INTEGER DEFAULT 10,
+                  theme TEXT DEFAULT 'light')''')
+    
+    # Проверяем, есть ли колонка theme
+    c.execute("PRAGMA table_info(user_settings)")
+    columns = [column[1] for column in c.fetchall()]
+    
+    # Если колонки theme нет, добавляем её
+    if 'theme' not in columns:
+        c.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "light"')
+    
+    conn.commit()
+    conn.close()
+
+# Инициализируем базу данных при запуске
+init_db()
 
 def get_temp_storage_path(link_id):
     """Получение пути к временному хранилищу"""
@@ -85,6 +113,39 @@ def is_temp_storage_valid(link_id):
     finally:
         conn.close()
 
+def get_user_theme(user_id):
+    """Получение темы пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('SELECT theme FROM user_settings WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result[0] if result and result[0] else 'light'
+    except Exception as e:
+        logger.error(f"Ошибка при получении темы пользователя: {str(e)}")
+        return 'light'
+    finally:
+        conn.close()
+
+def set_user_theme(user_id, theme):
+    """Установка темы пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('''INSERT OR REPLACE INTO user_settings 
+                     (user_id, theme, lines_to_keep) 
+                     VALUES (?, ?, 
+                            COALESCE((SELECT lines_to_keep FROM user_settings WHERE user_id = ?), 
+                            ?))''', 
+                 (user_id, theme, user_id, DEFAULT_LINES_TO_KEEP))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при установке темы пользователя: {str(e)}")
+        return False
+    finally:
+        conn.close()
+
 @app.route('/')
 def index():
     """Главная страница"""
@@ -96,7 +157,6 @@ def temp_storage(link_id):
     try:
         # Проверяем валидность хранилища
         if not is_temp_storage_valid(link_id):
-            # Если хранилище недействительно, удаляем его директорию если она существует
             storage_path = get_temp_storage_path(link_id)
             if os.path.exists(storage_path):
                 try:
@@ -105,7 +165,6 @@ def temp_storage(link_id):
                 except Exception as e:
                     logger.error(f"Ошибка при удалении директории недействительного хранилища {link_id}: {str(e)}")
             
-            # Удаляем запись из базы данных
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             try:
@@ -118,6 +177,16 @@ def temp_storage(link_id):
                 conn.close()
                 
             return "Временное хранилище не найдено или срок его действия истек", 404
+
+        # Получаем user_id и тему пользователя
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+        result = c.fetchone()
+        user_id = result[0] if result else None
+        conn.close()
+
+        theme = get_user_theme(user_id) if user_id else 'light'
         
         # Получаем список файлов
         storage_path = get_temp_storage_path(link_id)
@@ -137,18 +206,17 @@ def temp_storage(link_id):
                     'modified': datetime.fromtimestamp(os.path.getmtime(file_path))
                 })
         
-        # Сортируем файлы по дате изменения
         files.sort(key=lambda x: x['modified'], reverse=True)
         
-        # Получаем статистику хранилища
-        used_space = total_size / (1024 * 1024)  # Конвертируем в МБ
+        used_space = total_size / (1024 * 1024)
         used_percentage = (total_size / app.config['MAX_STORAGE_SIZE']) * 100
         
         return render_template('temp_storage.html',
                              link_id=link_id,
                              files=files,
                              used_space=used_space,
-                             used_percentage=used_percentage)
+                             used_percentage=used_percentage,
+                             theme=theme)
         
     except Exception as e:
         logger.error(f"Ошибка при загрузке страницы: {str(e)}")
@@ -176,17 +244,6 @@ def upload_file(link_id):
         chunk_number = int(request.form.get('chunk', '0'))
         total_chunks = int(request.form.get('chunks', '1'))
         total_size = int(request.form.get('total_size', '0'))
-
-        # Проверяем количество файлов в хранилище для первого чанка
-        if chunk_number == 0:
-            storage_path = get_temp_storage_path(link_id)
-            if os.path.exists(storage_path):
-                existing_files = len([f for f in os.listdir(storage_path) if os.path.isfile(os.path.join(storage_path, f))])
-                if existing_files >= app.config['MAX_FILES_PER_UPLOAD']:
-                    logger.error(f"Превышен лимит количества файлов для загрузки: {existing_files}")
-                    return jsonify({
-                        'error': f'Превышен лимит количества файлов для одной загрузки ({app.config["MAX_FILES_PER_UPLOAD"]})'
-                    }), 400
 
         # Проверяем размер файла
         file.seek(0, 2)  # Перемещаемся в конец файла
@@ -371,6 +428,35 @@ def download_multiple_files(link_id):
 
     except Exception as e:
         logger.error(f"Ошибка при скачивании файлов: {str(e)}")
+        return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
+
+@app.route('/space/<link_id>/set-theme', methods=['POST'])
+def set_theme(link_id):
+    """Установка темы для пользователя"""
+    try:
+        theme = request.json.get('theme')
+        if theme not in ['light', 'dark']:
+            return jsonify({'error': 'Неверная тема'}), 400
+
+        # Получаем user_id из базы данных по link_id
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+        result = c.fetchone()
+        
+        if not result:
+            return jsonify({'error': 'Хранилище не найдено'}), 404
+            
+        user_id = result[0]
+        
+        # Устанавливаем тему
+        if set_user_theme(user_id, theme):
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'Ошибка при установке темы'}), 500
+            
+    except Exception as e:
+        logger.error(f"Ошибка при установке темы: {str(e)}")
         return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
 
 @app.route('/health')
