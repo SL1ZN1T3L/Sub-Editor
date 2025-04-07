@@ -13,6 +13,9 @@ import operator
 import logging
 import shutil
 import time
+import asyncio
+import aiosqlite
+import aiofiles
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -79,14 +82,14 @@ OPERATORS = {
 user_action_times = {}  # Словарь для хранения времени последних действий
 user_action_counts = {}  # Словарь для подсчета действий за период
 user_spam_warnings = {}  # Словарь для хранения предупреждений о спаме
-banned_users = set()  # Множество для хранения ID заблокированных пользователей
+user_ban_list = set()  # Множество для хранения ID заблокированных пользователей
 SPAM_COOLDOWN = 0.5  # Минимальное время между действиями в секундах
 MAX_ACTIONS_PER_MINUTE = 20  # Максимальное количество действий в минуту
 BAN_THRESHOLD = 50  # Порог для автоматической блокировки
 WARNING_THRESHOLD = 10  # Порог для предупреждения администратора (уменьшен)
 ADMIN_NOTIFICATION_INTERVAL = 60  # Интервал между уведомлениями администратора в секундах
 
-def ensure_directories():
+async def ensure_directories():
     """Создание необходимых директорий с обработкой ошибок"""
     directories = [TEMP_DIR, LOG_DIR, TEMP_LINKS_DIR]
     for directory in directories:
@@ -96,8 +99,8 @@ def ensure_directories():
                 logger.info(f"Создана директория: {directory}")
                 # Проверяем права на запись
                 test_file = os.path.join(directory, 'test.txt')
-                with open(test_file, 'w') as f:
-                    f.write('test')
+                async with aiofiles.open(test_file, 'w') as f:
+                    await f.write('test')
                 os.remove(test_file)
                 logger.info(f"Проверка прав доступа к директории {directory} успешна")
         except Exception as e:
@@ -106,25 +109,22 @@ def ensure_directories():
             print(error_message)
             sys.exit(1)
 
-def log_error(user_id, error_message):
+async def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
     try:
         log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
+        async with aiofiles.open(log_file, 'a', encoding='utf-8') as f:
+            await f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
     except Exception as e:
         print(f"Ошибка при логировании: {str(e)}")
         print(f"[{timestamp}] User {user_id}: {error_message}")
 
-def setup_database():
+async def setup_database():
     """Настройка базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Создание таблицы users
-    c.execute('''CREATE TABLE IF NOT EXISTS users
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY,
                   username TEXT,
                   is_verified BOOLEAN DEFAULT FALSE,
@@ -135,113 +135,117 @@ def setup_database():
                   last_action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   is_banned BOOLEAN DEFAULT FALSE)''')
-    
-    # Проверка наличия поля is_banned и его добавление, если отсутствует
-    c.execute("PRAGMA table_info(users)")
-    columns = [column[1] for column in c.fetchall()]
-    if 'is_banned' not in columns:
-        c.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
-    
-    # Создание таблицы bot_status
-    c.execute('''CREATE TABLE IF NOT EXISTS bot_status
+        
+        # Проверка наличия поля is_banned и его добавление, если отсутствует
+        cursor = await conn.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in await cursor.fetchall()]
+        if 'is_banned' not in columns:
+            await conn.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
+        
+        # Создание таблицы bot_status
+        await conn.execute('''CREATE TABLE IF NOT EXISTS bot_status
                  (id INTEGER PRIMARY KEY,
                   status TEXT DEFAULT 'enabled',
                   lines_to_keep INTEGER DEFAULT 10)''')
-    
-    # Проверяем наличие записи с id=1
-    c.execute('SELECT COUNT(*) FROM bot_status WHERE id = 1')
-    if c.fetchone()[0] == 0:
-        c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
-    
-    # Создание таблицы user_settings
-    c.execute('''CREATE TABLE IF NOT EXISTS user_settings
+        
+        # Проверяем наличие записи с id=1
+        cursor = await conn.execute('SELECT COUNT(*) FROM bot_status WHERE id = 1')
+        count = await cursor.fetchone()
+        if count[0] == 0:
+            await conn.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
+        
+        # Создание таблицы user_settings
+        await conn.execute('''CREATE TABLE IF NOT EXISTS user_settings
                  (user_id INTEGER PRIMARY KEY,
                   language TEXT DEFAULT 'ru',
                   lines_to_keep INTEGER DEFAULT 10,
                   theme TEXT DEFAULT 'light',
                   FOREIGN KEY (user_id) REFERENCES users(user_id))''')
-    
-    # Проверяем наличие колонок в user_settings
-    c.execute("PRAGMA table_info(user_settings)")
-    columns = [column[1] for column in c.fetchall()]
-    if 'lines_to_keep' not in columns:
-        c.execute("ALTER TABLE user_settings ADD COLUMN lines_to_keep INTEGER DEFAULT 10")
-    if 'theme' not in columns:
-        c.execute("ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT 'light'")
-    
-    # Создание таблицы temp_links
-    c.execute('''CREATE TABLE IF NOT EXISTS temp_links
+        
+        # Проверяем наличие колонок в user_settings
+        cursor = await conn.execute("PRAGMA table_info(user_settings)")
+        columns = [column[1] for column in await cursor.fetchall()]
+        if 'lines_to_keep' not in columns:
+            await conn.execute("ALTER TABLE user_settings ADD COLUMN lines_to_keep INTEGER DEFAULT 10")
+        if 'theme' not in columns:
+            await conn.execute("ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT 'light'")
+        
+        # Создание таблицы temp_links
+        await conn.execute('''CREATE TABLE IF NOT EXISTS temp_links
                  (link_id TEXT PRIMARY KEY,
                   user_id INTEGER,
                   expires_at TIMESTAMP,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (user_id) REFERENCES users(user_id))''')
-    
-    # Создание таблицы temp_link_files
-    c.execute('''CREATE TABLE IF NOT EXISTS temp_link_files
+        
+        # Создание таблицы temp_link_files
+        await conn.execute('''CREATE TABLE IF NOT EXISTS temp_link_files
                  (file_id TEXT PRIMARY KEY,
                   link_id TEXT,
                   file_path TEXT,
                   original_name TEXT,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   FOREIGN KEY (link_id) REFERENCES temp_links(link_id))''')
+        
+        await conn.commit()
     
-    conn.commit()
-    conn.close()
     logger.info("База данных успешно инициализирована")
 
 def is_user_verified(user_id):
-    """Проверка верификации пользователя"""
+    """Проверка верификации пользователя (синхронная версия)"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT is_verified FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else False
+    try:
+        c = conn.cursor()
+        c.execute('SELECT is_verified FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result[0] if result else False
+    finally:
+        conn.close()
 
 def is_admin(user_id):
-    """Проверка прав администратора"""
+    """Проверка, является ли пользователь администратором"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] == UserRole.ADMIN if result else False
+    try:
+        c = conn.cursor()
+        c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result and result[0] == UserRole.ADMIN
+    finally:
+        conn.close()
 
-def verify_user(user_id, username, role=UserRole.USER):
+async def verify_user(user_id, username, role=UserRole.USER):
     """Верификация пользователя в базе данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Проверяем существующие данные пользователя
-    c.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    
-    if result:
-        existing_role, usage_count, merged_count, qr_count = result
-        # Не понижаем роль существующего пользователя
-        if role == UserRole.USER:
-            role = existing_role
-    else:
-        usage_count, merged_count, qr_count = 0, 0, 0
-    
-    c.execute('''
-        INSERT OR REPLACE INTO users 
-        (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
-        VALUES (?, ?, TRUE, ?, ?, ?, ?)
-    ''', (user_id, username, role, usage_count, merged_count, qr_count))
-    
-    conn.commit()
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Проверяем существующие данные пользователя
+        cursor = await conn.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
+        result = await cursor.fetchone()
+        
+        if result:
+            existing_role, usage_count, merged_count, qr_count = result
+            # Не понижаем роль существующего пользователя
+            if role == UserRole.USER:
+                role = existing_role
+        else:
+            usage_count, merged_count, qr_count = 0, 0, 0
+        
+        await conn.execute('''
+            INSERT OR REPLACE INTO users 
+            (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
+            VALUES (?, ?, TRUE, ?, ?, ?, ?)
+        ''', (user_id, username, role, usage_count, merged_count, qr_count))
+        
+        await conn.commit()
 
 def is_bot_enabled():
     """Проверка, включен ли бот"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT status FROM bot_status WHERE id = 1')
-    result = c.fetchone()
-    conn.close()
-    return result[0] == 'enabled' if result else True
+    try:
+        c = conn.cursor()
+        c.execute('SELECT status FROM bot_status WHERE id = 1')
+        result = c.fetchone()
+        return result[0] == 'enabled' if result else True
+    finally:
+        conn.close()
 
 def generate_captcha():
     """Генерация простой математической капчи"""
@@ -296,7 +300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if command.startswith('admin'):
             code = command[5:]  # Получаем код после 'admin'
             if code == ADMIN_CODE:
-                verify_user(user_id, username, UserRole.ADMIN)
+                await verify_user(user_id, username, UserRole.ADMIN)
                 await update.message.reply_text("Вы успешно авторизованы как администратор! 👑")
                 return await show_menu(update, context)
             else:
@@ -308,7 +312,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             code = command[9:]  # Получаем код после 'user_plus'
             user_plus_code = os.getenv('USER_PLUS_CODE')
             if user_plus_code and code == user_plus_code:
-                verify_user(user_id, username, UserRole.USER_PLUS)
+                await verify_user(user_id, username, UserRole.USER_PLUS)
                 await update.message.reply_text("Вы успешно авторизованы как привилегированный пользователь! ⭐")
                 return await show_menu(update, context)
             else:
@@ -357,7 +361,7 @@ async def check_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if user_answer == correct_answer:
             # Верифицируем пользователя
-            verify_user(
+            await verify_user(
                 update.effective_user.id,
                 update.effective_user.username,
                 UserRole.USER
@@ -638,11 +642,11 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 setting_type = context.user_data.get('setting_type')
                 if setting_type == 'global' and is_admin(update.effective_user.id):
                     # Админ меняет глобальные настройки
-                    set_lines_to_keep(lines)  # Обновляем глобальные настройки
+                    set_lines_to_keep(lines)  # Синхронная версия
                     await update.message.reply_text(f"Глобальное количество строк установлено: {lines}")
                 elif setting_type == 'personal':
                     # Пользователь меняет свои настройки
-                    set_user_lines_to_keep(update.effective_user.id, lines)
+                    set_user_lines_to_keep(update.effective_user.id, lines)  # Синхронная версия
                     await update.message.reply_text(f"Ваше персональное количество строк установлено: {lines}")
             else:
                 await update.message.reply_text(f"Введите число от 1 до {MAX_LINKS}")
@@ -690,7 +694,7 @@ async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TY
     return TECH_COMMANDS
 
 async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_admin_rights(update.effective_user.id):
+    if not await check_admin_rights(update.effective_user.id):
         await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         await show_menu(update, context)
         return MENU
@@ -732,7 +736,7 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update, context):
         return USER_MANAGEMENT
         
-    users = get_all_users()
+    users = await get_all_users()
     if not users:
         await update.message.reply_text("В базе данных нет пользователей.")
         return OTHER_COMMANDS
@@ -811,7 +815,7 @@ async def _process_user_management(update: Update, context: ContextTypes.DEFAULT
                 await update.message.reply_text("Вы не можете удалить себя.")
             else:
                 try:
-                    remove_user(user_id)
+                    await remove_user(user_id)
                     await update.message.reply_text("Пользователь удален.")
                     return await show_users_list(update, context)
                 except Exception as e:
@@ -845,11 +849,9 @@ async def _process_user_management(update: Update, context: ContextTypes.DEFAULT
             }[text]
             
             try:
-                conn = sqlite3.connect(DB_PATH)
-                c = conn.cursor()
-                c.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
-                conn.commit()
-                conn.close()
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
+                    await conn.commit()
                 await update.message.reply_text("Роль пользователя обновлена.")
                 return await show_users_list(update, context)
             except Exception as e:
@@ -948,11 +950,11 @@ async def process_merge_files(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     except Exception as e:
         error_message = f"Ошибка при обработке подписок: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        await log_error(update.effective_user.id, error_message)
         await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте снова.")
         return MERGE_FILES
 
-def merge_vless_subscriptions(subscriptions):
+async def merge_vless_subscriptions(subscriptions):
     """Объединение VLESS-подписок"""
     merged_configs = []
     
@@ -993,7 +995,7 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
             encoded_config = base64.b64encode(merged_config.encode('utf-8')).decode('utf-8')
             
             # Увеличиваем счетчик объединений
-            increment_merge_count(update.effective_user.id)
+            await increment_merge_count(update.effective_user.id)
             
             await update.message.reply_text(
                 f"Объединенная подписка (нажмите, чтобы скопировать):\n\n"
@@ -1017,13 +1019,17 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         return await process_merge_files(update, context)
 
-def increment_merge_count(user_id):
-    """Увеличение счетчика объединенных подписок"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE users SET merged_count = merged_count + 1 WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+async def increment_merge_count(user_id):
+    """Увеличение счетчика объединений"""
+    async with await safe_db_connect() as conn:
+        if not conn:
+            return
+        
+        try:
+            await conn.execute('UPDATE users SET merged_count = merged_count + 1 WHERE user_id = ?', (user_id,))
+            await conn.commit()
+        except sqlite3.Error as e:
+            print(f"Ошибка при обновлении счетчика объединений: {e}")
 
 async def process_qr_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -1121,7 +1127,7 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             
             # Увеличиваем счетчик созданных QR-кодов
-            increment_qr_count(update.effective_user.id)
+            await increment_qr_count(update.effective_user.id)
             
             # Очищаем данные пользователя
             context.user_data.clear()
@@ -1130,7 +1136,7 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         except Exception as e:
             error_message = f"Ошибка при создании QR-кода: {str(e)}"
-            log_error(update.effective_user.id, error_message)
+            await log_error(update.effective_user.id, error_message)
             if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
             await update.message.reply_text(
@@ -1141,7 +1147,7 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         error_message = f"Ошибка при создании QR-кода: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        await log_error(update.effective_user.id, error_message)
         if temp_filename and os.path.exists(temp_filename):
             os.remove(temp_filename)
         await update.message.reply_text(
@@ -1150,45 +1156,40 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return QR_TYPE
 
-def increment_qr_count(user_id):
+async def increment_qr_count(user_id):
     """Увеличение счетчика созданных QR-кодов"""
-    conn = safe_db_connect()
-    if not conn:
-        return
-    
-    try:
-        c = conn.cursor()
-        c.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
-        conn.commit()
-    except sqlite3.Error as e:
-        print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
-    finally:
-        conn.close()
+    async with await safe_db_connect() as conn:
+        if not conn:
+            return
+        
+        try:
+            await conn.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
+            await conn.commit()
+        except sqlite3.Error as e:
+            print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
 
-def safe_db_connect():
+async def safe_db_connect():
     """Безопасное подключение к базе данных"""
     try:
-        return sqlite3.connect(DB_PATH)
+        return await aiosqlite.connect(DB_PATH)
     except sqlite3.Error as e:
         print(f"Ошибка подключения к базе данных: {e}")
         return None
 
-def get_user_role(user_id):
+async def get_user_role(user_id):
     """Получение роли пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
+        result = await cursor.fetchone()
     return result[0] if result else UserRole.USER
 
-def check_admin_rights(user_id):
+async def check_admin_rights(user_id):
     """Проверка прав администратора"""
-    return get_user_role(user_id) == UserRole.ADMIN
+    return await get_user_role(user_id) == UserRole.ADMIN
 
-def check_user_plus_rights(user_id):
+async def check_user_plus_rights(user_id):
     """Проверка прав привилегированного пользователя"""
-    role = get_user_role(user_id)
+    role = await get_user_role(user_id)
     return role in [UserRole.ADMIN, UserRole.USER_PLUS]
 
 async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1215,84 +1216,81 @@ async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-def generate_temp_link_id():
+async def generate_temp_link_id():
     """Генерация уникального ID для временной ссылки"""
     # Используем только буквы и цифры для более короткого ID
     chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    return ''.join(random.choice(chars) for _ in range(4))
+    while True:
+        link_id = ''.join(random.choice(chars) for _ in range(4))
+        # Проверяем, не существует ли уже такой ID
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT COUNT(*) FROM temp_links WHERE link_id = ?', (link_id,))
+            count = await cursor.fetchone()
+            if count[0] == 0:
+                return link_id
 
-def save_temp_link(file_path, original_name, duration_hours, user_id):
+async def save_temp_link(file_path, original_name, duration_hours, user_id):
     """Сохранение информации о временной ссылке"""
     try:
-        link_id = generate_temp_link_id()
+        link_id = await generate_temp_link_id()
         expires_at = datetime.now() + timedelta(hours=duration_hours)
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        try:
-            # Создаем запись о временной ссылке
-            c.execute('''
-                INSERT INTO temp_links (link_id, expires_at, user_id)
-                VALUES (?, ?, ?)
-            ''', (link_id, expires_at, user_id))
-            
-            # Добавляем информацию о файле
-            c.execute('''
-                INSERT INTO temp_link_files (link_id, file_path, original_name)
-                VALUES (?, ?, ?)
-            ''', (link_id, file_path, original_name))
-            
-            conn.commit()
-            return link_id
-            
-        except sqlite3.Error as e:
-            conn.rollback()
-            error_message = f"Ошибка базы данных при сохранении временной ссылки: {str(e)}"
-            log_error(None, error_message)
-            raise
-            
-        finally:
-            conn.close()
-            
+        async with aiosqlite.connect(DB_PATH) as conn:
+            try:
+                # Создаем запись о временной ссылке
+                await conn.execute('''
+                    INSERT INTO temp_links (link_id, expires_at, user_id)
+                    VALUES (?, ?, ?)
+                ''', (link_id, expires_at, user_id))
+                
+                # Добавляем информацию о файле
+                await conn.execute('''
+                    INSERT INTO temp_link_files (link_id, file_path, original_name)
+                    VALUES (?, ?, ?)
+                ''', (link_id, file_path, original_name))
+                
+                await conn.commit()
+                return link_id
+                
+            except sqlite3.Error as e:
+                error_message = f"Ошибка базы данных при сохранении временной ссылки: {str(e)}"
+                await log_error(None, error_message)
+                raise
+                
     except Exception as e:
         error_message = f"Критическая ошибка при сохранении временной ссылки: {str(e)}"
-        log_error(None, error_message)
+        await log_error(None, error_message)
         raise
 
-def get_temp_link_info(link_id):
+async def get_temp_link_info(link_id):
     """Получение информации о временной ссылке"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Проверяем срок действия ссылки
-    c.execute('''
-        SELECT expires_at
-        FROM temp_links
-        WHERE link_id = ? AND expires_at > datetime('now')
-    ''', (link_id,))
-    
-    result = c.fetchone()
-    if not result:
-        conn.close()
-        return None
-    
-    # Получаем список файлов
-    c.execute('''
-        SELECT file_path, original_name
-        FROM temp_link_files
-        WHERE link_id = ?
-    ''', (link_id,))
-    
-    files = c.fetchall()
-    conn.close()
-    
-    return {
-        'expires_at': result[0],
-        'files': files
-    }
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Проверяем срок действия ссылки
+        cursor = await conn.execute('''
+            SELECT expires_at
+            FROM temp_links
+            WHERE link_id = ? AND expires_at > datetime('now')
+        ''', (link_id,))
+        
+        result = await cursor.fetchone()
+        if not result:
+            return None
+        
+        # Получаем список файлов
+        cursor = await conn.execute('''
+            SELECT file_path, original_name
+            FROM temp_link_files
+            WHERE link_id = ?
+        ''', (link_id,))
+        
+        files = await cursor.fetchall()
+        
+        return {
+            'expires_at': result[0],
+            'files': files
+        }
 
-def cleanup_expired_links():
+async def cleanup_expired_links(context=None):
     """Очистка истекших временных ссылок"""
     try:
         # Проверяем и создаем директорию для временных ссылок
@@ -1300,57 +1298,55 @@ def cleanup_expired_links():
             os.makedirs(TEMP_LINKS_DIR)
             logger.info(f"Создана директория для временных ссылок: {TEMP_LINKS_DIR}")
             
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        try:
-            # Получаем список истекших ссылок
-            c.execute('''
-                SELECT link_id
-                FROM temp_links
-                WHERE expires_at <= datetime('now')
-            ''')
-            
-            expired_links = c.fetchall()
-            logger.info(f"Найдено {len(expired_links)} истекших ссылок")
-            
-            # Удаляем файлы и записи из базы данных
-            for link_id in expired_links:
-                # Получаем список файлов для удаления
-                c.execute('SELECT file_path FROM temp_link_files WHERE link_id = ?', (link_id[0],))
-                files = c.fetchall()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            try:
+                # Получаем список истекших ссылок
+                cursor = await conn.execute('''
+                    SELECT link_id
+                    FROM temp_links
+                    WHERE expires_at <= datetime('now')
+                ''')
                 
-                # Удаляем файлы
-                for file_path in files:
-                    try:
-                        if os.path.exists(file_path[0]):
-                            os.remove(file_path[0])
-                            logger.info(f"Удален файл: {file_path[0]}")
-                    except Exception as e:
-                        error_message = f"Ошибка при удалении файла {file_path[0]}: {str(e)}"
-                        logger.error(error_message)
+                expired_links = await cursor.fetchall()
+                logger.info(f"Найдено {len(expired_links)} истекших ссылок")
                 
-                # Удаляем записи из базы данных
-                c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id[0],))
-            
-            conn.commit()
-            
-        except sqlite3.Error as e:
-            conn.rollback()
-            error_message = f"Ошибка базы данных при очистке истекших ссылок: {str(e)}"
-            logger.error(error_message)
-            
-        finally:
-            conn.close()
+                # Удаляем файлы и записи из базы данных
+                for link_id in expired_links:
+                    # Получаем список файлов для удаления
+                    cursor = await conn.execute('SELECT file_path FROM temp_link_files WHERE link_id = ?', (link_id[0],))
+                    files = await cursor.fetchall()
+                    
+                    # Удаляем файлы
+                    for file_path in files:
+                        try:
+                            if os.path.exists(file_path[0]):
+                                os.remove(file_path[0])
+                                logger.info(f"Удален файл: {file_path[0]}")
+                        except Exception as e:
+                            error_message = f"Ошибка при удалении файла {file_path[0]}: {str(e)}"
+                            logger.error(error_message)
+                    
+                    # Удаляем записи из базы данных
+                    await conn.execute('DELETE FROM temp_link_files WHERE link_id = ?', (link_id[0],))
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id[0],))
+                
+                await conn.commit()
+                
+            except sqlite3.Error as e:
+                await conn.rollback()
+                error_message = f"Ошибка базы данных при очистке истекших ссылок: {str(e)}"
+                logger.error(error_message)
             
     except Exception as e:
         error_message = f"Критическая ошибка при очистке истекших ссылок: {str(e)}"
         logger.error(error_message)
 
 def get_temp_link_keyboard():
-    """Создание клавиатуры для меню временных ссылок"""
+    """Создание клавиатуры для временных ссылок"""
     keyboard = [
-        ['✅ Завершить'],
+        ['1 час', '3 часа', '6 часов'],
+        ['12 часов', '24 часа', '48 часов'],
+        ['72 часа'],
         ['Назад']
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -1358,25 +1354,17 @@ def get_temp_link_keyboard():
 async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка создания временной ссылки"""
     try:
-        # Проверяем наличие активного хранилища
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            SELECT link_id, expires_at 
-            FROM temp_links 
-            WHERE user_id = ? AND expires_at > datetime('now')
-            ORDER BY created_at DESC
-            LIMIT 1
-        ''', (update.effective_user.id,))
-        active_storage = c.fetchone()
+        # Получаем список активных хранилищ пользователя
+        storage_list = await get_user_active_storage(update.effective_user.id)
         
-        if active_storage:
-            link_id, expires_at = active_storage
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+        if storage_list:
+            # Берем первое активное хранилище
+            storage = storage_list[0]
+            storage_url = f"{TEMP_LINK_DOMAIN}/space/{storage['link_id']}"
             await update.message.reply_text(
                 f"У вас уже есть активное временное хранилище!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
+                f"⏱ Срок действия до: {format_datetime(storage['expires_at'])}\n\n"
                 f"Вы можете продолжать использовать это хранилище или дождаться окончания его срока действия для создания нового.",
                 reply_markup=get_menu_keyboard(update.effective_user.id)
             )
@@ -1405,9 +1393,6 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_menu_keyboard(update.effective_user.id)
         )
         return MENU
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
 async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка выбора срока хранения временного хранилища"""
@@ -1435,20 +1420,12 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
     
     try:
         # Проверяем еще раз наличие активного хранилища
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            SELECT link_id, expires_at 
-            FROM temp_links 
-            WHERE user_id = ? AND expires_at > datetime('now')
-            ORDER BY created_at DESC
-            LIMIT 1
-        ''', (update.effective_user.id,))
-        active_storage = c.fetchone()
+        storage_list = await get_user_active_storage(update.effective_user.id)
         
-        if active_storage:
-            link_id, expires_at = active_storage
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+        if storage_list:
+            # Берем первое активное хранилище
+            storage = storage_list[0]
+            storage_url = f"{TEMP_LINK_DOMAIN}/space/{storage['link_id']}"
             
             # Создаем клавиатуру с опцией удаления
             keyboard = [
@@ -1460,26 +1437,27 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text(
                 f"У вас уже есть активное временное хранилище!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
+                f"⏱ Срок действия до: {format_datetime(storage['expires_at'])}\n\n"
                 f"Вы можете продолжать использовать это хранилище или удалить его.",
                 reply_markup=markup
             )
-            context.user_data['current_storage'] = link_id
+            context.user_data['current_storage'] = storage['link_id']
             return TEMP_LINK
             
         duration_hours = duration_map[update.message.text]
         
         # Создаем временное хранилище
-        link_id = generate_temp_link_id()
+        link_id = await generate_temp_link_id()
         expires_at = datetime.now() + timedelta(hours=duration_hours)
         
         # Создаем запись о временном хранилище
-        c.execute('''
-            INSERT INTO temp_links (link_id, expires_at, user_id, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-        ''', (link_id, expires_at, update.effective_user.id))
-        
-        conn.commit()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute('''
+                INSERT INTO temp_links (link_id, expires_at, user_id, created_at)
+                VALUES (?, ?, ?, datetime('now'))
+            ''', (link_id, expires_at, update.effective_user.id))
+            
+            await conn.commit()
         
         # Формируем URL для доступа к хранилищу
         storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
@@ -1514,8 +1492,6 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         return TEMP_LINK
             
     except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
         error_message = f"Ошибка при создании временного хранилища: {str(e)}"
         logger.error(error_message)
         
@@ -1524,10 +1500,6 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             reply_markup=get_menu_keyboard(update.effective_user.id)
         )
         return MENU
-        
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
 async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Продление срока хранения временного хранилища"""
@@ -1786,39 +1758,37 @@ async def delete_user_storage(update: Update, context: ContextTypes.DEFAULT_TYPE
             conn.close()
 
 def get_user_lines_to_keep(user_id):
-    """Получение персонального количества строк для пользователя"""
+    """Получение количества строк для пользователя"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else DEFAULT_LINES_TO_KEEP
-
-def set_user_lines_to_keep(user_id, lines):
-    """Установка персонального количества строк для пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)', 
-              (user_id, lines))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        if not result:
+            c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+            result = c.fetchone()
+        return result[0] if result else 10
+    finally:
+        conn.close()
 
 def get_lines_to_keep():
-    """Получение количества строк для сохранения"""
+    """Получение глобального количества строк"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
     result = c.fetchone()
     conn.close()
-    return result[0] if result else DEFAULT_LINES_TO_KEEP
+    return result[0] if result else 10
 
 def set_lines_to_keep(lines):
-    """Установка количества строк для сохранения"""
+    """Установка глобального количества строк"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_all_users():
     """Получение списка всех пользователей"""
@@ -1830,13 +1800,19 @@ def get_all_users():
     conn.close()
     return users
 
-def remove_user(user_id):
+async def get_all_users():
+    """Получение списка всех пользователей"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute('SELECT user_id, username, role, is_banned FROM users')
+        users = await cursor.fetchall()
+    return users
+
+async def remove_user(user_id):
     """Удаление пользователя из базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+        await conn.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
+        await conn.commit()
 
 async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка файла"""
@@ -1905,7 +1881,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return PROCESS_FILE
 
-        # Получаем количество строк для конкретного пользователя
+        # Получаем количество строк для конкретного пользователя (синхронно)
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         
         # Берем последние N строк
@@ -1928,7 +1904,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
                 )
             # Увеличиваем счетчик после успешной отправки
-            increment_usage_count(update.effective_user.id)
+            await increment_usage_count(update.effective_user.id)
         finally:
             # Удаляем временный файл
             if os.path.exists(output_filename):
@@ -1940,44 +1916,75 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         error_message = f"Произошла ошибка при обработке файла: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        await log_error(update.effective_user.id, error_message)
         print(f"Error for user {update.effective_user.id}: {error_message}")
         await update.message.reply_text(
             "Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова."
         )
         return PROCESS_FILE
 
-def increment_usage_count(user_id):
-    """Увеличение счетчика обработанных файлов"""
-    conn = safe_db_connect()
-    if not conn:
-        return
-    
-    try:
-        c = conn.cursor()
-        c.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
-        conn.commit()
-    except sqlite3.Error as e:
-        print(f"Ошибка при обновлении счетчика обработанных файлов: {e}")
-    finally:
-        conn.close()
+async def increment_usage_count(user_id):
+    """Увеличение счетчика использования бота"""
+    async with await safe_db_connect() as conn:
+        if not conn:
+            return
+        
+        try:
+            await conn.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
+            await conn.commit()
+        except sqlite3.Error as e:
+            print(f"Ошибка при обновлении счетчика использования: {e}")
 
-def get_user_active_storage(user_id):
-    """Получение активного хранилища пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+async def get_user_active_storage(user_id):
+    """Получение активных временных ссылок пользователя"""
     try:
-        c.execute('''
-            SELECT link_id, expires_at 
-            FROM temp_links 
-            WHERE user_id = ? AND expires_at > datetime('now')
-            ORDER BY created_at DESC
-            LIMIT 1
-        ''', (user_id,))
-        result = c.fetchone()
-        return result if result else None
-    finally:
-        conn.close()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('''
+                SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count
+                FROM temp_links tl
+                LEFT JOIN temp_link_files tlf ON tl.link_id = tlf.link_id
+                WHERE tl.user_id = ? AND tl.expires_at > datetime('now')
+                GROUP BY tl.link_id
+                ORDER BY tl.expires_at ASC
+            ''', (user_id,))
+            
+            result = await cursor.fetchall()
+            
+            # Получаем детали по каждой ссылке
+            storage_list = []
+            for link_id, expires_at, file_count in result:
+                # Получаем имена файлов
+                cursor = await conn.execute('''
+                    SELECT original_name 
+                    FROM temp_link_files 
+                    WHERE link_id = ?
+                ''', (link_id,))
+                
+                files = await cursor.fetchall()
+                file_names = [file[0] for file in files]
+                
+                # Форматируем оставшееся время
+                expires_date = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
+                time_left = expires_date - datetime.now()
+                days = time_left.days
+                hours, remainder = divmod(time_left.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                
+                time_str = f"{days}д {hours}ч {minutes}м" if days > 0 else f"{hours}ч {minutes}м"
+                
+                storage_list.append({
+                    'link_id': link_id,
+                    'expires_at': expires_at,
+                    'file_count': file_count,
+                    'file_names': file_names,
+                    'time_left': time_str
+                })
+            
+            return storage_list
+            
+    except Exception as e:
+        print(f"Ошибка при получении списка хранилища: {e}")
+        return []
 
 def format_datetime(dt):
     """Форматирование даты без миллисекунд"""
@@ -1990,22 +1997,10 @@ def format_datetime(dt):
 async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список активных хранилищ"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        # Получаем список активных хранилищ
+        storage_list = await get_user_active_storage(update.effective_user.id)
         
-        # Получаем список активных хранилищ с информацией о пользователях
-        c.execute('''
-            SELECT t.link_id, t.user_id, u.username, t.expires_at, t.created_at
-            FROM temp_links t
-            JOIN users u ON t.user_id = u.user_id
-            WHERE t.expires_at > datetime('now')
-            ORDER BY t.created_at DESC
-        ''')
-        
-        storages = c.fetchall()
-        conn.close()
-        
-        if not storages:
+        if not storage_list:
             await update.message.reply_text(
                 "Активных хранилищ не найдено.",
                 reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
@@ -2016,15 +2011,18 @@ async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         storage_info = {}
         
-        for storage in storages:
-            link_id, user_id, username, expires_at, created_at = storage
-            username = username or f"ID: {user_id}"
-            storage_text = f"{username} (до {format_datetime(expires_at)})"
+        for storage in storage_list:
+            link_id = storage['link_id']
+            expires_at = storage['expires_at']
+            file_count = storage['file_count']
+            time_left = storage['time_left']
+            
+            storage_text = f"Хранилище {link_id[:8]}... ({file_count} файлов, {time_left})"
             keyboard.append([KeyboardButton(text=storage_text)])
             storage_info[storage_text] = {
                 'link_id': link_id,
-                'user_id': user_id,
-                'expires_at': expires_at
+                'expires_at': expires_at,
+                'file_names': storage['file_names']
             }
         
         keyboard.append([KeyboardButton(text="Назад")])
@@ -2094,12 +2092,10 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
             if os.path.exists(storage_path):
                 shutil.rmtree(storage_path)
             
-            # Удаляем запись из базы данных
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('DELETE FROM temp_links WHERE link_id = ?', (storage_data['link_id'],))
-            conn.commit()
-            conn.close()
+            # Удаляем запись из базы данных асинхронно
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (storage_data['link_id'],))
+                await conn.commit()
             
             await update.message.reply_text(
                 "✅ Хранилище успешно удалено!",
@@ -2203,13 +2199,15 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
     return STORAGE_MANAGEMENT
 
 def is_user_banned(user_id):
-    """Проверка, заблокирован ли пользователь"""
+    """Проверка блокировки пользователя"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else False
+    try:
+        c = conn.cursor()
+        c.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result[0] if result else False
+    finally:
+        conn.close()
 
 async def ban_user(bot, user_id, ban=True):
     """Блокировка/разблокировка пользователя"""
@@ -2223,9 +2221,9 @@ async def ban_user(bot, user_id, ban=True):
         
         # Обновляем множество заблокированных пользователей
         if ban:
-            banned_users.add(user_id)
+            user_ban_list.add(user_id)
         else:
-            banned_users.discard(user_id)
+            user_ban_list.discard(user_id)
             
         logger.info(f"Пользователь {user_id} {'заблокирован' if ban else 'разблокирован'}")
         return True
@@ -2263,95 +2261,60 @@ async def notify_admins_about_spam(bot, user_id, username, action_count):
     except Exception as e:
         logger.error(f"Ошибка при отправке уведомлений администраторам: {e}")
 
-def check_action_cooldown(user_id):
-    """Проверка времени между действиями пользователя с использованием кэша"""
-    # Для администраторов не применяем ограничения
-    if is_admin(user_id):
-        return True
-        
+async def check_action_cooldown(user_id):
+    """Проверка защиты от спама"""
     current_time = time.time()
     
-    # Инициализация счетчиков для нового пользователя
+    # Если пользователь не в кэше, добавляем его
     if user_id not in user_action_times:
         user_action_times[user_id] = current_time
         user_action_counts[user_id] = 1
         return True
     
-    # Проверка времени между действиями
-    time_diff = current_time - user_action_times[user_id]
-    if time_diff < SPAM_COOLDOWN:
-        return False
+    # Проверяем последнее время действия
+    last_action_time = user_action_times[user_id]
+    time_diff = current_time - last_action_time
     
-    # Обновление времени последнего действия
+    # Если прошло менее 2 секунд, увеличиваем счетчик и проверяем
+    if time_diff < 2:
+        user_action_counts[user_id] = user_action_counts.get(user_id, 0) + 1
+        
+        # Если больше 5 быстрых действий, считаем это спамом
+        if user_action_counts[user_id] > 5:
+            # Добавляем предупреждение
+            user_spam_warnings[user_id] = user_spam_warnings.get(user_id, 0) + 1
+            
+            # Если больше 3 предупреждений - банить
+            if user_spam_warnings[user_id] > 3:
+                # Банить пользователя
+                user_ban_list.add(user_id)
+                
+                # Записываем в базу данных
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+                    await conn.commit()
+                
+                # Логируем бан
+                logger.warning(f"Пользователь {user_id} заблокирован за спам")
+                return False
+            
+            # Сбрасываем счетчик
+            user_action_counts[user_id] = 0
+            
+            # Логируем попытку спама
+            logger.warning(f"Обнаружена попытка спама от пользователя {user_id}")
+            return False
+    
+    # Обновляем время действия
     user_action_times[user_id] = current_time
     
-    # Проверка количества действий за минуту
-    if user_id not in user_action_counts:
+    # Если прошло больше 10 секунд, сбрасываем счетчик
+    if time_diff > 10:
         user_action_counts[user_id] = 1
-    else:
-        user_action_counts[user_id] += 1
-    
-    # Очистка старых счетчиков каждую минуту
-    if time_diff > 60:
-        user_action_counts[user_id] = 1
-        if user_id in user_spam_warnings:
-            del user_spam_warnings[user_id]
-    
-    # Проверка превышения лимита действий
-    if user_action_counts[user_id] > MAX_ACTIONS_PER_MINUTE:
-        # Автоматическая блокировка при превышении порога
-        if user_action_counts[user_id] > BAN_THRESHOLD:
-            ban_user(user_id, True)
-            return False
-        
-        # Проверка необходимости отправки уведомления администратору
-        if user_action_counts[user_id] > WARNING_THRESHOLD:
-            if user_id not in user_spam_warnings or \
-               current_time - user_spam_warnings[user_id] > ADMIN_NOTIFICATION_INTERVAL:
-                user_spam_warnings[user_id] = current_time
-                return "notify_admin"
-        
-        return False
     
     return True
 
-async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка доступа пользователя с улучшенной защитой от спама"""
-    user_id = update.effective_user.id
-    
-    # Проверяем блокировку в памяти
-    if user_id in banned_users:
-        return False
-    
-    # Проверяем блокировку в базе данных
-    if is_user_banned(user_id):
-        banned_users.add(user_id)
-        return False
-    
-    # Для администраторов не применяем ограничения
-    if is_admin(user_id):
-        return True
-    
-    # Проверяем спам с использованием кэша
-    spam_check = check_action_cooldown(user_id)
-    
-    if spam_check == "notify_admin":
-        # Отправляем уведомление администраторам
-        await notify_admins_about_spam(
-            context.bot,
-            user_id,
-            update.effective_user.username,
-            user_action_counts[user_id]
-        )
-        return False
-    elif not spam_check:
-        # Логируем попытку спама
-        logger.warning(f"Обнаружена попытка спама от пользователя {user_id}")
-        return False
-    
-    return True
-
-def cleanup_spam_protection():
+async def cleanup_spam_protection(context=None):
     """Очистка старых записей в кэше защиты от спама"""
     current_time = time.time()
     # Удаляем записи старше 5 минут
@@ -2363,22 +2326,68 @@ def cleanup_spam_protection():
             if user_id in user_spam_warnings:
                 del user_spam_warnings[user_id]
 
-def main():
+async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка доступа пользователя с защитой от спама"""
+    user_id = update.effective_user.id
+    
+    # Проверяем блокировку в памяти
+    if user_id in user_ban_list:
+        return False
+    
+    # Проверяем блокировку в базе данных
+    if is_user_banned(user_id):
+        user_ban_list.add(user_id)
+        return False
+    
+    # Для администраторов не применяем ограничения
+    if is_admin(user_id):
+        return True
+    
+    # Проверяем спам
+    if not await check_action_cooldown(user_id):
+        await update.message.reply_text(
+            "Слишком много запросов. Пожалуйста, подождите..."
+        )
+        return False
+    
+    return True
+
+if __name__ == '__main__':
     try:
-        # Создаем необходимые директории
-        ensure_directories()
+        print("Запуск бота...")
         
-        # Создаем и настраиваем приложение
-        application = Application.builder().token(TOKEN).build()
+        # Настройка и запуск бота стандартным методом библиотеки
+        # Не используем asyncio.run() чтобы избежать проблем с циклом событий
+        app = Application.builder().token(TOKEN).build()
         
-        # Создаем базу данных
-        setup_database()
+        print("Приложение создано, настраиваем цикл событий...")
+        try:
+            # Получаем текущий цикл событий или создаем новый, если его нет
+            try:
+                loop = asyncio.get_event_loop()
+                print(f"Получен существующий цикл событий: {loop}")
+            except RuntimeError:
+                print("Нет текущего цикла событий, создаем новый...")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                print(f"Создан новый цикл событий: {loop}")
+                
+            # Инициализируем базу данных и создаем директории
+            print("Инициализация базы данных и директорий...")
+            loop.run_until_complete(ensure_directories())
+            loop.run_until_complete(setup_database())
+            print("Инициализация базы данных завершена")
+        except Exception as e:
+            print(f"Ошибка при настройке цикла событий: {e}")
+            raise
         
-        # Запускаем очистку истекших ссылок
-        cleanup_expired_links()
+        # Запускаем очистку истекших ссылок через планировщик
+        app.job_queue.run_repeating(cleanup_expired_links, interval=3600, first=10)
         
         # Запускаем очистку кэша защиты от спама
-        application.job_queue.run_repeating(cleanup_spam_protection, interval=300, first=300)
+        app.job_queue.run_repeating(cleanup_spam_protection, interval=300, first=300)
+        
+        print("Настройка обработчиков...")
         
         async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Восстановление меню для верифицированных пользователей"""
@@ -2436,19 +2445,49 @@ def main():
         )
         
         # Добавляем обработчик разговора
-        application.add_handler(conv_handler)
+        app.add_handler(conv_handler)
         
-        # Запускаем бота
+        # Выводим информацию о запуске
         print(f"Бот запущен и готов к работе!")
         print(f"База данных: {DB_PATH}")
         print(f"Временные файлы: {TEMP_DIR}")
         print(f"Логи: {LOG_DIR}")
         print(f"Временные ссылки: {TEMP_LINKS_DIR}")
-        application.run_polling()
-
+        
+        # Запускаем бота (блокирующий вызов)
+        print("Запускаем бота в режиме поллинга...")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        print("Бот остановлен.")
+        
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот остановлен пользователем или системой.")
     except Exception as e:
         print(f"Критическая ошибка при запуске бота: {e}")
+        # Выводим трассировку стека для отладки
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
-if __name__ == '__main__':
-    main() 
+def import_aiolibs():
+    """Проверка и импорт асинхронных библиотек"""
+    try:
+        import aiosqlite
+        import aiofiles
+        logger.info("Асинхронные библиотеки успешно импортированы")
+        return True
+    except ImportError:
+        logger.warning("Асинхронные библиотеки не найдены, будут использованы синхронные версии")
+        return False
+
+def set_user_lines_to_keep(user_id, lines):
+    """Установка количества строк для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute(
+            'INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)',
+            (user_id, lines)
+        )
+        conn.commit()
+    finally:
+        conn.close()

@@ -1,5 +1,7 @@
 from flask import Flask, send_file, request, render_template, jsonify
 import sqlite3
+import aiosqlite
+import asyncio
 import os
 import logging
 from datetime import datetime, timedelta
@@ -10,6 +12,22 @@ import time
 import tempfile
 import zipfile
 from io import BytesIO
+from functools import wraps
+
+# Функция для выполнения асинхронных задач в синхронном контексте Flask
+def run_async(func):
+    """Декоратор для запуска асинхронных функций в синхронном контексте Flask"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(func(*args, **kwargs))
+        finally:
+            loop.close()
+    return wrapper
+
+# Создаем необходимые директории
+os.makedirs('logs', exist_ok=True)
 
 # Настройка логирования
 logging.basicConfig(
@@ -46,27 +64,30 @@ TEMP_STORAGE_DIR = os.path.join(BASE_DIR, 'temp_storage')
 os.makedirs(TEMP_STORAGE_DIR, exist_ok=True)
 
 # Инициализация базы данных
+async def init_db_async():
+    """Асинхронная инициализация базы данных"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Создаем таблицу настроек пользователя, если её нет
+        await conn.execute('''CREATE TABLE IF NOT EXISTS user_settings
+                     (user_id INTEGER PRIMARY KEY,
+                      lines_to_keep INTEGER DEFAULT 10,
+                      theme TEXT DEFAULT 'light')''')
+        
+        # Проверяем, есть ли колонка theme
+        cursor = await conn.execute("PRAGMA table_info(user_settings)")
+        columns_raw = await cursor.fetchall()
+        columns = [column[1] for column in columns_raw]
+        
+        # Если колонки theme нет, добавляем её
+        if 'theme' not in columns:
+            await conn.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "light"')
+        
+        await conn.commit()
+
+# Синхронная обертка для инициализации базы данных
 def init_db():
     """Инициализация базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Создаем таблицу настроек пользователя, если её нет
-    c.execute('''CREATE TABLE IF NOT EXISTS user_settings
-                 (user_id INTEGER PRIMARY KEY,
-                  lines_to_keep INTEGER DEFAULT 10,
-                  theme TEXT DEFAULT 'light')''')
-    
-    # Проверяем, есть ли колонка theme
-    c.execute("PRAGMA table_info(user_settings)")
-    columns = [column[1] for column in c.fetchall()]
-    
-    # Если колонки theme нет, добавляем её
-    if 'theme' not in columns:
-        c.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "light"')
-    
-    conn.commit()
-    conn.close()
+    return run_async(init_db_async)()
 
 # Инициализируем базу данных при запуске
 init_db()
@@ -91,60 +112,64 @@ def check_temp_storage_limit(link_id):
     """Проверка лимита временного хранилища (500 MB)"""
     return get_temp_storage_size(link_id) < 500 * 1024 * 1024
 
-def is_temp_storage_valid(link_id):
-    """Проверка валидности временного хранилища"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+async def is_temp_storage_valid_async(link_id):
+    """Асинхронная проверка валидности временного хранилища"""
     try:
-        # Проверяем существование и срок действия хранилища через SQL
-        c.execute('''
-            SELECT COUNT(*) 
-            FROM temp_links 
-            WHERE link_id = ? 
-            AND datetime(expires_at) > datetime('now')
-        ''', (link_id,))
-        
-        count = c.fetchone()[0]
-        return count > 0
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Проверяем существование и срок действия хранилища через SQL
+            cursor = await conn.execute('''
+                SELECT COUNT(*) 
+                FROM temp_links 
+                WHERE link_id = ? 
+                AND datetime(expires_at) > datetime('now')
+            ''', (link_id,))
             
+            result = await cursor.fetchone()
+            count = result[0] if result else 0
+            return count > 0
+                
     except Exception as e:
         logger.error(f"Ошибка при проверке срока действия хранилища {link_id}: {str(e)}")
         return False
-    finally:
-        conn.close()
 
-def get_user_theme(user_id):
-    """Получение темы пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+def is_temp_storage_valid(link_id):
+    """Проверка валидности временного хранилища (синхронная обертка)"""
+    return run_async(is_temp_storage_valid_async)(link_id)
+
+async def get_user_theme_async(user_id):
+    """Асинхронное получение темы пользователя"""
     try:
-        c.execute('SELECT theme FROM user_settings WHERE user_id = ?', (user_id,))
-        result = c.fetchone()
-        return result[0] if result and result[0] else 'light'
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT theme FROM user_settings WHERE user_id = ?', (user_id,))
+            result = await cursor.fetchone()
+            return result[0] if result and result[0] else 'light'
     except Exception as e:
         logger.error(f"Ошибка при получении темы пользователя: {str(e)}")
         return 'light'
-    finally:
-        conn.close()
 
-def set_user_theme(user_id, theme):
-    """Установка темы пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+def get_user_theme(user_id):
+    """Получение темы пользователя (синхронная обертка)"""
+    return run_async(get_user_theme_async)(user_id)
+
+async def set_user_theme_async(user_id, theme):
+    """Асинхронная установка темы пользователя"""
     try:
-        c.execute('''INSERT OR REPLACE INTO user_settings 
-                     (user_id, theme, lines_to_keep) 
-                     VALUES (?, ?, 
-                            COALESCE((SELECT lines_to_keep FROM user_settings WHERE user_id = ?), 
-                            ?))''', 
-                 (user_id, theme, user_id, DEFAULT_LINES_TO_KEEP))
-        conn.commit()
-        return True
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute('''INSERT OR REPLACE INTO user_settings 
+                         (user_id, theme, lines_to_keep) 
+                         VALUES (?, ?, 
+                                COALESCE((SELECT lines_to_keep FROM user_settings WHERE user_id = ?), 
+                                ?))''', 
+                     (user_id, theme, user_id, DEFAULT_LINES_TO_KEEP))
+            await conn.commit()
+            return True
     except Exception as e:
         logger.error(f"Ошибка при установке темы пользователя: {str(e)}")
         return False
-    finally:
-        conn.close()
+
+def set_user_theme(user_id, theme):
+    """Установка темы пользователя (синхронная обертка)"""
+    return run_async(set_user_theme_async)(user_id, theme)
 
 @app.route('/')
 def index():
@@ -165,27 +190,30 @@ def temp_storage(link_id):
                 except Exception as e:
                     logger.error(f"Ошибка при удалении директории недействительного хранилища {link_id}: {str(e)}")
             
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
+            # Используем асинхронную функцию через декоратор
+            @run_async
+            async def delete_expired_storage():
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                    await conn.commit()
+                    logger.info(f"Удалена запись о недействительном хранилище: {link_id}")
+            
             try:
-                c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-                conn.commit()
-                logger.info(f"Удалена запись о недействительном хранилище: {link_id}")
+                delete_expired_storage()
             except Exception as e:
                 logger.error(f"Ошибка при удалении записи о хранилище {link_id}: {str(e)}")
-            finally:
-                conn.close()
                 
             return "Временное хранилище не найдено или срок его действия истек", 404
 
-        # Получаем user_id и тему пользователя
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
-        result = c.fetchone()
-        user_id = result[0] if result else None
-        conn.close()
-
+        # Получаем user_id из базы асинхронно
+        @run_async
+        async def get_user_id():
+            async with aiosqlite.connect(DB_PATH) as conn:
+                cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+                result = await cursor.fetchone()
+                return result[0] if result else None
+        
+        user_id = get_user_id()
         theme = get_user_theme(user_id) if user_id else 'light'
         
         # Получаем список файлов
@@ -366,12 +394,14 @@ def delete_all_storage(link_id):
             shutil.rmtree(storage_path)
             logger.info(f"Удалено хранилище по запросу пользователя: {link_id}")
             
-        # Удаляем запись из базы данных
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-        conn.commit()
-        conn.close()
+        # Удаляем запись из базы данных асинхронно
+        @run_async
+        async def delete_storage_record():
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                await conn.commit()
+        
+        delete_storage_record()
         
         return jsonify({'success': True})
     except Exception as e:
@@ -447,17 +477,19 @@ def set_theme(link_id):
         if theme not in ['light', 'dark']:
             return jsonify({'error': 'Неверная тема'}), 400
 
-        # Получаем user_id из базы данных по link_id
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
-        result = c.fetchone()
+        # Получаем user_id из базы данных по link_id асинхронно
+        @run_async
+        async def get_user_id_for_theme():
+            async with aiosqlite.connect(DB_PATH) as conn:
+                cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+                result = await cursor.fetchone()
+                return result[0] if result else None
         
-        if not result:
+        user_id = get_user_id_for_theme()
+        
+        if not user_id:
             return jsonify({'error': 'Хранилище не найдено'}), 404
             
-        user_id = result[0]
-        
         # Устанавливаем тему
         if set_user_theme(user_id, theme):
             return jsonify({'success': True})
@@ -473,44 +505,44 @@ def health_check():
     """Проверка работоспособности сервера"""
     return "OK", 200
 
-def cleanup_expired_storages():
-    """Очистка истекших временных хранилищ"""
+async def cleanup_expired_storages_async():
+    """Асинхронная очистка истекших временных хранилищ"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Получаем список истекших хранилищ
-        c.execute('''
-            SELECT link_id 
-            FROM temp_links 
-            WHERE datetime(expires_at) <= datetime('now')
-        ''')
-        
-        expired_storages = c.fetchall()
-        
-        # Удаляем файлы и записи из базы данных
-        for storage in expired_storages:
-            link_id = storage[0]
-            storage_path = get_temp_storage_path(link_id)
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Получаем список истекших хранилищ
+            cursor = await conn.execute('''
+                SELECT link_id 
+                FROM temp_links 
+                WHERE datetime(expires_at) <= datetime('now')
+            ''')
             
-            # Удаляем файлы хранилища
-            if os.path.exists(storage_path):
-                try:
-                    shutil.rmtree(storage_path)
-                    logger.info(f"Удалено временное хранилище: {link_id}")
-                except Exception as e:
-                    logger.error(f"Ошибка при удалении хранилища {link_id}: {str(e)}")
+            expired_storages = await cursor.fetchall()
             
-            # Удаляем запись из базы данных
-            c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-        
-        conn.commit()
-        logger.info(f"Очищено {len(expired_storages)} истекших хранилищ")
-        
+            # Удаляем файлы и записи из базы данных
+            for storage in expired_storages:
+                link_id = storage[0]
+                storage_path = get_temp_storage_path(link_id)
+                
+                # Удаляем файлы хранилища
+                if os.path.exists(storage_path):
+                    try:
+                        shutil.rmtree(storage_path)
+                        logger.info(f"Удалено временное хранилище: {link_id}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении хранилища {link_id}: {str(e)}")
+                
+                # Удаляем запись из базы данных
+                await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+            
+            await conn.commit()
+            logger.info(f"Очищено {len(expired_storages)} истекших хранилищ")
+            
     except Exception as e:
         logger.error(f"Ошибка при очистке хранилищ: {str(e)}")
-    finally:
-        conn.close()
+
+def cleanup_expired_storages():
+    """Очистка истекших временных хранилищ (синхронная обертка)"""
+    return run_async(cleanup_expired_storages_async)()
 
 def periodic_cleanup():
     """Периодическая очистка истекших хранилищ"""
@@ -526,12 +558,19 @@ def periodic_cleanup():
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных
+    @run_async
+    async def check_db_connection():
+        try:
+            async with aiosqlite.connect(DB_PATH) as conn:
+                logger.info("Подключение к базе данных успешно")
+        except Exception as e:
+            logger.error(f"Ошибка подключения к базе данных: {str(e)}")
+            raise
+    
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.close()
-        logger.info("Подключение к базе данных успешно")
+        check_db_connection()
     except Exception as e:
-        logger.error(f"Ошибка подключения к базе данных: {str(e)}")
+        logger.error(f"Ошибка при запуске: {str(e)}")
         raise
     
     # Запускаем поток очистки

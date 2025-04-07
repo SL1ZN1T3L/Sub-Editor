@@ -158,19 +158,30 @@
             max-height: 400px;
             overflow-y: auto;
             position: relative;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            margin-top: 10px;
         }
         .file-table {
             width: 100%;
-            border-collapse: collapse;
+            border-collapse: separate;
+            border-spacing: 0;
         }
         .file-table th {
             padding: 10px;
             text-align: left;
-            border-bottom: 2px solid #dee2e6;
+            border-bottom: 2px solid var(--border-color);
+            background-color: var(--card-bg);
+            position: sticky;
+            top: 0;
+            z-index: 2;
         }
         .file-table td {
             padding: 8px;
-            border-bottom: 1px solid #dee2e6;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .file-table tr:last-child td {
+            border-bottom: none;
         }
         .file-actions {
             display: flex;
