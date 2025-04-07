@@ -33,12 +33,12 @@ ENV/
 
 # Bot specific
 .env
-bot_users.db
+*.db
 temp/
 logs/
 *.log
 /temp_links
 /temp_storage
-bot copy 5.py
-bot copy.py
-bot_users1.db
+*copy*.py
+Sub-Editor.code-workspace
+*fix*.py

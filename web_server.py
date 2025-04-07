@@ -13,6 +13,7 @@ import tempfile
 import zipfile
 from io import BytesIO
 from functools import wraps
+import pytz
 
 # Функция для выполнения асинхронных задач в синхронном контексте Flask
 def run_async(func):
@@ -115,18 +116,35 @@ def check_temp_storage_limit(link_id):
 async def is_temp_storage_valid_async(link_id):
     """Асинхронная проверка валидности временного хранилища"""
     try:
+        # Получаем текущее московское время
+        from datetime import datetime
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time_iso = now.strftime('%Y-%m-%d %H:%M:%S')
+        
         async with aiosqlite.connect(DB_PATH) as conn:
-            # Проверяем существование и срок действия хранилища через SQL
-            cursor = await conn.execute('''
-                SELECT COUNT(*) 
-                FROM temp_links 
-                WHERE link_id = ? 
-                AND datetime(expires_at) > datetime('now')
-            ''', (link_id,))
-            
+            # Сначала проверяем существование хранилища
+            cursor = await conn.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
             result = await cursor.fetchone()
-            count = result[0] if result else 0
-            return count > 0
+            
+            if not result:
+                logger.info(f"Хранилище {link_id} не найдено")
+                return False
+                
+            # Получаем дату истечения и убираем микросекунды, если они есть
+            expires_at = result[0]
+            if '.' in expires_at:
+                expires_at = expires_at.split('.')[0]
+                
+            # Сравниваем даты в строковом формате
+            is_valid = expires_at > current_time_iso
+            
+            if not is_valid:
+                logger.info(f"Хранилище {link_id} истекло ({expires_at} <= {current_time_iso})")
+            else:
+                logger.info(f"Хранилище {link_id} действительно ({expires_at} > {current_time_iso})")
+                
+            return is_valid
                 
     except Exception as e:
         logger.error(f"Ошибка при проверке срока действия хранилища {link_id}: {str(e)}")
@@ -508,37 +526,74 @@ def health_check():
 async def cleanup_expired_storages_async():
     """Асинхронная очистка истекших временных хранилищ"""
     try:
+        logger.info("Начинаем проверку истекших хранилищ")
+        
+        # Получим текущее локальное время в формате ISO
+        from datetime import datetime
+        
+        # Используем московское время (UTC+3) как основное
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time_iso = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Текущее время (Москва): {current_time_iso}")
+        
         async with aiosqlite.connect(DB_PATH) as conn:
-            # Получаем список истекших хранилищ
-            cursor = await conn.execute('''
-                SELECT link_id 
-                FROM temp_links 
-                WHERE datetime(expires_at) <= datetime('now')
-            ''')
+            # Получаем список всех хранилищ с их сроками действия для диагностики
+            cursor = await conn.execute('SELECT link_id, expires_at FROM temp_links')
+            all_storages = await cursor.fetchall()
             
-            expired_storages = await cursor.fetchall()
+            # Список истекших хранилищ
+            expired_storages = []
+            
+            for storage in all_storages:
+                link_id = storage[0]
+                expires_at = storage[1]
+                logger.info(f"Хранилище {link_id}, срок действия до: {expires_at}")
+                
+                # Форматируем дату истечения без микросекунд для корректного сравнения
+                expires_clean = expires_at
+                if '.' in expires_at:
+                    expires_clean = expires_at.split('.')[0]
+                
+                # Сравниваем даты в строковом формате без микросекунд
+                if expires_clean <= current_time_iso:
+                    expired_storages.append((link_id,))
+                    logger.info(f"Хранилище {link_id} истекло ({expires_clean} <= {current_time_iso})")
+            
+            logger.info(f"Найдено {len(expired_storages)} истекших хранилищ")
             
             # Удаляем файлы и записи из базы данных
             for storage in expired_storages:
                 link_id = storage[0]
                 storage_path = get_temp_storage_path(link_id)
+                logger.info(f"Удаляем хранилище {link_id}")
                 
                 # Удаляем файлы хранилища
                 if os.path.exists(storage_path):
                     try:
                         shutil.rmtree(storage_path)
-                        logger.info(f"Удалено временное хранилище: {link_id}")
+                        logger.info(f"Удалены файлы хранилища: {link_id}")
                     except Exception as e:
-                        logger.error(f"Ошибка при удалении хранилища {link_id}: {str(e)}")
+                        logger.error(f"Ошибка при удалении файлов хранилища {link_id}: {str(e)}")
+                else:
+                    logger.info(f"Директория хранилища {link_id} не существует")
                 
                 # Удаляем запись из базы данных
-                await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                try:
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                    logger.info(f"Удалена запись о хранилище {link_id} из базы данных")
+                except Exception as e:
+                    logger.error(f"Ошибка при удалении записи о хранилище {link_id}: {str(e)}")
             
             await conn.commit()
             logger.info(f"Очищено {len(expired_storages)} истекших хранилищ")
             
     except Exception as e:
         logger.error(f"Ошибка при очистке хранилищ: {str(e)}")
+        # Для отладки выводим полный стек ошибки
+        import traceback
+        logger.error(traceback.format_exc())
 
 def cleanup_expired_storages():
     """Очистка истекших временных хранилищ (синхронная обертка)"""
@@ -548,13 +603,14 @@ def periodic_cleanup():
     """Периодическая очистка истекших хранилищ"""
     while True:
         try:
+            logger.info("Запуск периодической очистки истекших хранилищ")
             cleanup_expired_storages()
-            # Проверяем каждые 5 минут
-            time.sleep(300)
+            # Проверяем каждую минуту
+            time.sleep(60)
         except Exception as e:
             logger.error(f"Ошибка в периодической очистке: {str(e)}")
-            # В случае ошибки ждем 1 минуту перед следующей попыткой
-            time.sleep(60)
+            # В случае ошибки ждем 30 секунд перед следующей попыткой
+            time.sleep(30)
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных

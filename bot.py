@@ -16,6 +16,7 @@ import time
 import asyncio
 import aiosqlite
 import aiofiles
+import pytz
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +55,21 @@ if not USER_PLUS_CODE:
 
 # Получаем домен для временных ссылок
 TEMP_LINK_DOMAIN = os.getenv('TEMP_LINK_DOMAIN', 'https://your-domain.com')
+
+async def set_user_lines_to_keep(user_id, lines):
+    """Асинхронная установка количества строк для пользователя"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute(
+                'INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)',
+                (user_id, lines)
+            )
+            await conn.commit()
+            logger.info(f"Установлено количество строк {lines} для пользователя {user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка при установке количества строк для пользователя {user_id}: {e}")
+        # Fallback к синхронной версии
+        set_user_lines_to_keep_sync(user_id, lines)
 
 # Константы для ограничений
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
@@ -564,27 +580,14 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_menu(update, context)
         return MENU
     elif text == "Настройка количества строк":
-        if is_admin(update.effective_user.id):
-            # Для админов показываем выбор между личными и глобальными настройками
-            keyboard = []
-            keyboard.append([KeyboardButton(text="Изменить для себя")])
-            keyboard.append([KeyboardButton(text="Изменить для всех")])
-            keyboard.append([KeyboardButton(text="Назад")])
-            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text(
-                "Выберите действие:",
-                reply_markup=markup
-            )
-            return SET_LINES
-        else:
-            # Для обычных пользователей сразу запрашиваем количество строк
-            current_lines = get_user_lines_to_keep(update.effective_user.id)
-            await update.message.reply_text(
-                f"Текущее количество строк: {current_lines}\n"
-                f"Введите новое количество (от 1 до {MAX_LINKS}):"
-            )
-            context.user_data['setting_type'] = 'personal'
-            return SET_LINES
+        # Напрямую запрашиваем новое количество строк для пользователя
+        current_lines = get_user_lines_to_keep(update.effective_user.id)
+        await update.message.reply_text(
+            f"Текущее количество строк: {current_lines}\n"
+            f"Введите новое количество (от 1 до {MAX_LINKS}):"
+        )
+        context.user_data['setting_type'] = 'personal'
+        return SET_LINES
     elif text == "Технические команды" and is_admin(update.effective_user.id):
         markup = ReplyKeyboardMarkup(
             keyboard=[
@@ -619,7 +622,7 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Назад":
         await settings_command(update, context)
         return SETTINGS
-    elif text == "Изменить для себя":
+    elif text == "Настройка количества строк":
         current_lines = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
             f"Текущее количество строк: {current_lines}\n"
@@ -627,27 +630,13 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['setting_type'] = 'personal'
         return SET_LINES
-    elif text == "Изменить для всех" and is_admin(update.effective_user.id):
-        current_lines = get_lines_to_keep()
-        await update.message.reply_text(
-            f"Текущее глобальное количество строк: {current_lines}\n"
-            f"Введите новое количество (от 1 до {MAX_LINKS}):"
-        )
-        context.user_data['setting_type'] = 'global'
-        return SET_LINES
     elif text.isdigit():
         try:
             lines = int(text)
             if 1 <= lines <= MAX_LINKS:
-                setting_type = context.user_data.get('setting_type')
-                if setting_type == 'global' and is_admin(update.effective_user.id):
-                    # Админ меняет глобальные настройки
-                    set_lines_to_keep(lines)  # Синхронная версия
-                    await update.message.reply_text(f"Глобальное количество строк установлено: {lines}")
-                elif setting_type == 'personal':
-                    # Пользователь меняет свои настройки
-                    set_user_lines_to_keep(update.effective_user.id, lines)  # Синхронная версия
-                    await update.message.reply_text(f"Ваше персональное количество строк установлено: {lines}")
+                # Пользователь меняет свои настройки
+                await set_user_lines_to_keep(update.effective_user.id, lines)
+                await update.message.reply_text(f"Количество строк установлено: {lines}")
             else:
                 await update.message.reply_text(f"Введите число от 1 до {MAX_LINKS}")
                 return SET_LINES
@@ -662,7 +651,7 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SET_LINES
 
 async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_admin_rights(update.effective_user.id):
+    if not await check_admin_rights(update.effective_user.id):
         await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         await show_menu(update, context)
         return MENU
@@ -688,8 +677,11 @@ async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Бот выключен. Теперь он на техническом обслуживании.")
     elif text == "Перезапустить бота":
         await update.message.reply_text("Перезапуск бота...")
-        # Завершаем процесс, systemd или другой менеджер процессов перезапустит бот
-        sys.exit(0)
+        # Отправляем сигнал SIGTERM для корректного завершения работы
+        import os
+        import signal
+        logger.info("Перезапуск бота по команде администратора")
+        os.kill(os.getpid(), signal.SIGTERM)
     
     return TECH_COMMANDS
 
@@ -736,7 +728,7 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update, context):
         return USER_MANAGEMENT
         
-    users = await get_all_users()
+    users = await get_all_users_async()
     if not users:
         await update.message.reply_text("В базе данных нет пользователей.")
         return OTHER_COMMANDS
@@ -1233,7 +1225,10 @@ async def save_temp_link(file_path, original_name, duration_hours, user_id):
     """Сохранение информации о временной ссылке"""
     try:
         link_id = await generate_temp_link_id()
-        expires_at = datetime.now() + timedelta(hours=duration_hours)
+        
+        # Создаем дату без микросекунд
+        expires_dt = datetime.now() + timedelta(hours=duration_hours)
+        expires_at = expires_dt.strftime('%Y-%m-%d %H:%M:%S')  # Форматирование без микросекунд
         
         async with aiosqlite.connect(DB_PATH) as conn:
             try:
@@ -1264,31 +1259,49 @@ async def save_temp_link(file_path, original_name, duration_hours, user_id):
 
 async def get_temp_link_info(link_id):
     """Получение информации о временной ссылке"""
-    async with aiosqlite.connect(DB_PATH) as conn:
-        # Проверяем срок действия ссылки
-        cursor = await conn.execute('''
-            SELECT expires_at
-            FROM temp_links
-            WHERE link_id = ? AND expires_at > datetime('now')
-        ''', (link_id,))
+    try:
+        # Получаем текущее московское время
+        import pytz
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time = now.strftime('%Y-%m-%d %H:%M:%S')
         
-        result = await cursor.fetchone()
-        if not result:
-            return None
-        
-        # Получаем список файлов
-        cursor = await conn.execute('''
-            SELECT file_path, original_name
-            FROM temp_link_files
-            WHERE link_id = ?
-        ''', (link_id,))
-        
-        files = await cursor.fetchall()
-        
-        return {
-            'expires_at': result[0],
-            'files': files
-        }
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Получаем информацию о ссылке
+            cursor = await conn.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
+            result = await cursor.fetchone()
+            
+            if not result:
+                return None
+                
+            expires_at = result[0]
+            
+            # Очищаем дату от микросекунд, если они есть
+            clean_expires_at = expires_at
+            if '.' in expires_at:
+                clean_expires_at = expires_at.split('.')[0]
+                
+            # Проверяем, не истек ли срок действия
+            if clean_expires_at <= current_time:
+                logger.info(f"Ссылка {link_id} истекла ({clean_expires_at} <= {current_time})")
+                return None
+            
+            # Получаем список файлов
+            cursor = await conn.execute('''
+                SELECT file_path, original_name
+                FROM temp_link_files
+                WHERE link_id = ?
+            ''', (link_id,))
+            
+            files = await cursor.fetchall()
+            
+            return {
+                'expires_at': clean_expires_at,
+                'files': files
+            }
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о ссылке {link_id}: {e}")
+        return None
 
 async def cleanup_expired_links(context=None):
     """Очистка истекших временных ссылок"""
@@ -1297,17 +1310,35 @@ async def cleanup_expired_links(context=None):
         if not os.path.exists(TEMP_LINKS_DIR):
             os.makedirs(TEMP_LINKS_DIR)
             logger.info(f"Создана директория для временных ссылок: {TEMP_LINKS_DIR}")
+        
+        # Получаем текущее московское время
+        import pytz
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Очистка истекших ссылок, текущее время (Москва): {current_time}")
             
         async with aiosqlite.connect(DB_PATH) as conn:
             try:
-                # Получаем список истекших ссылок
-                cursor = await conn.execute('''
-                    SELECT link_id
-                    FROM temp_links
-                    WHERE expires_at <= datetime('now')
-                ''')
+                # Получаем список всех ссылок для проверки
+                cursor = await conn.execute('SELECT link_id, expires_at FROM temp_links')
+                all_links = await cursor.fetchall()
                 
-                expired_links = await cursor.fetchall()
+                expired_links = []
+                for link in all_links:
+                    link_id, expires_at = link
+                    
+                    # Очищаем дату от микросекунд, если они есть
+                    clean_expires_at = expires_at
+                    if '.' in expires_at:
+                        clean_expires_at = expires_at.split('.')[0]
+                    
+                    # Проверяем, истек ли срок действия
+                    if clean_expires_at <= current_time:
+                        expired_links.append((link_id,))
+                        logger.info(f"Найдена истекшая ссылка {link_id}, срок действия до: {clean_expires_at}")
+                
                 logger.info(f"Найдено {len(expired_links)} истекших ссылок")
                 
                 # Удаляем файлы и записи из базы данных
@@ -1329,6 +1360,7 @@ async def cleanup_expired_links(context=None):
                     # Удаляем записи из базы данных
                     await conn.execute('DELETE FROM temp_link_files WHERE link_id = ?', (link_id[0],))
                     await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id[0],))
+                    logger.info(f"Удалены записи о хранилище {link_id[0]} из базы данных")
                 
                 await conn.commit()
                 
@@ -1800,10 +1832,11 @@ def get_all_users():
     conn.close()
     return users
 
-async def get_all_users():
+async def get_all_users_async():
     """Получение списка всех пользователей"""
     async with aiosqlite.connect(DB_PATH) as conn:
-        cursor = await conn.execute('SELECT user_id, username, role, is_banned FROM users')
+        cursor = await conn.execute('''SELECT user_id, username, is_verified, role, 
+                 usage_count, merged_count, qr_count, is_banned FROM users''')
         users = await cursor.fetchall()
     return users
 
@@ -1881,7 +1914,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return PROCESS_FILE
 
-        # Получаем количество строк для конкретного пользователя (синхронно)
+        # Получаем количество строк для конкретного пользователя
         lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
         
         # Берем последние N строк
@@ -1938,21 +1971,54 @@ async def increment_usage_count(user_id):
 async def get_user_active_storage(user_id):
     """Получение активных временных ссылок пользователя"""
     try:
+        # Получаем текущее московское время в формате без микросекунд
+        import pytz
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Получение хранилищ пользователя {user_id}, текущее время (Москва): {current_time}")
+        
+        # Проверяем, является ли пользователь администратором
+        is_user_admin = is_admin(user_id)
+        
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute('''
-                SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count
-                FROM temp_links tl
-                LEFT JOIN temp_link_files tlf ON tl.link_id = tlf.link_id
-                WHERE tl.user_id = ? AND tl.expires_at > datetime('now')
-                GROUP BY tl.link_id
-                ORDER BY tl.expires_at ASC
-            ''', (user_id,))
+            # Если пользователь - админ, получаем все хранилища, иначе только его собственные
+            if is_user_admin:
+                cursor = await conn.execute('''
+                    SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count, tl.user_id, u.username
+                    FROM temp_links tl
+                    LEFT JOIN temp_link_files tlf ON tl.link_id = tlf.link_id
+                    LEFT JOIN users u ON tl.user_id = u.user_id
+                    GROUP BY tl.link_id
+                    ORDER BY tl.expires_at ASC
+                ''')
+            else:
+                cursor = await conn.execute('''
+                    SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count, tl.user_id, u.username
+                    FROM temp_links tl
+                    LEFT JOIN temp_link_files tlf ON tl.link_id = tlf.link_id
+                    LEFT JOIN users u ON tl.user_id = u.user_id
+                    WHERE tl.user_id = ?
+                    GROUP BY tl.link_id
+                    ORDER BY tl.expires_at ASC
+                ''', (user_id,))
             
             result = await cursor.fetchall()
             
             # Получаем детали по каждой ссылке
             storage_list = []
-            for link_id, expires_at, file_count in result:
+            for link_id, expires_at, file_count, creator_id, creator_username in result:
+                # Очищаем дату от микросекунд, если они есть
+                clean_expires_at = expires_at
+                if '.' in expires_at:
+                    clean_expires_at = expires_at.split('.')[0]
+                
+                # Проверяем, не истек ли срок действия
+                if clean_expires_at <= current_time:
+                    logger.info(f"Хранилище {link_id} истекло ({clean_expires_at} <= {current_time})")
+                    continue
+                
                 # Получаем имена файлов
                 cursor = await conn.execute('''
                     SELECT original_name 
@@ -1964,26 +2030,33 @@ async def get_user_active_storage(user_id):
                 file_names = [file[0] for file in files]
                 
                 # Форматируем оставшееся время
-                expires_date = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
-                time_left = expires_date - datetime.now()
+                expires_date = datetime.strptime(clean_expires_at, '%Y-%m-%d %H:%M:%S')
+                time_left = expires_date - now.replace(tzinfo=None)
                 days = time_left.days
                 hours, remainder = divmod(time_left.seconds, 3600)
                 minutes, _ = divmod(remainder, 60)
                 
                 time_str = f"{days}д {hours}ч {minutes}м" if days > 0 else f"{hours}ч {minutes}м"
                 
+                # Определяем имя создателя
+                creator_name = creator_username or f"ID: {creator_id}"
+                
                 storage_list.append({
                     'link_id': link_id,
-                    'expires_at': expires_at,
+                    'expires_at': clean_expires_at,
                     'file_count': file_count,
                     'file_names': file_names,
-                    'time_left': time_str
+                    'time_left': time_str,
+                    'creator_id': creator_id,
+                    'creator_name': creator_name
                 })
+                
+                logger.info(f"Найдено активное хранилище {link_id}, срок действия до: {clean_expires_at}, создатель: {creator_name}")
             
             return storage_list
             
     except Exception as e:
-        print(f"Ошибка при получении списка хранилища: {e}")
+        logger.error(f"Ошибка при получении списка хранилища: {e}")
         return []
 
 def format_datetime(dt):
@@ -2016,13 +2089,17 @@ async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             expires_at = storage['expires_at']
             file_count = storage['file_count']
             time_left = storage['time_left']
+            creator_name = storage['creator_name']
             
-            storage_text = f"Хранилище {link_id[:8]}... ({file_count} файлов, {time_left})"
+            # Добавляем информацию о создателе в текст кнопки
+            storage_text = f"Хранилище {link_id[:8]}... ({file_count} файлов, {time_left}) от {creator_name}"
             keyboard.append([KeyboardButton(text=storage_text)])
             storage_info[storage_text] = {
                 'link_id': link_id,
                 'expires_at': expires_at,
-                'file_names': storage['file_names']
+                'file_names': storage['file_names'],
+                'creator_name': creator_name,
+                'creator_id': storage['creator_id']
             }
         
         keyboard.append([KeyboardButton(text="Назад")])
@@ -2072,7 +2149,7 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text(
             f"Управление хранилищем:\n\n"
             f"🔗 ID: {storage_data['link_id']}\n"
-            f"👤 Пользователь: {text.split(' (')[0]}\n"
+            f"👤 Создатель: {storage_data['creator_name']}\n"
             f"⏱ Срок действия до: {format_datetime(storage_data['expires_at'])}\n\n"
             f"Выберите действие:",
             reply_markup=markup
@@ -2159,15 +2236,16 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
         
         try:
             duration_hours = duration_map[text]
-            new_expires_at = datetime.now() + timedelta(hours=duration_hours)
             
-            # Обновляем срок действия в базе данных
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
-                     (new_expires_at, storage_data['link_id']))
-            conn.commit()
-            conn.close()
+            # Создаем и форматируем новую дату без микросекунд
+            expires_dt = datetime.now() + timedelta(hours=duration_hours)
+            new_expires_at = expires_dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Обновляем срок действия в базе данных асинхронно
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
+                         (new_expires_at, storage_data['link_id']))
+                await conn.commit()
             
             # Форматируем текст о сроке продления
             duration_text = ""
@@ -2181,7 +2259,7 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
             
             await update.message.reply_text(
                 f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
-                f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}",
+                f"⏱ Новый срок действия до: {new_expires_at}",
                 reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
             )
             
@@ -2447,6 +2525,20 @@ if __name__ == '__main__':
         # Добавляем обработчик разговора
         app.add_handler(conv_handler)
         
+        # Обработчик сигналов для корректного завершения работы
+        def signal_handler(signum, frame):
+            """Обработка сигналов остановки"""
+            print(f"Получен сигнал {signum}, останавливаем бота...")
+            # Используем новую задачу для остановки приложения
+            loop = asyncio.get_event_loop()
+            loop.create_task(app.stop())
+            loop.create_task(app.shutdown())
+            
+        # Регистрируем обработчики сигналов
+        import signal
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
         # Выводим информацию о запуске
         print(f"Бот запущен и готов к работе!")
         print(f"База данных: {DB_PATH}")
@@ -2454,9 +2546,23 @@ if __name__ == '__main__':
         print(f"Логи: {LOG_DIR}")
         print(f"Временные ссылки: {TEMP_LINKS_DIR}")
         
-        # Запускаем бота (блокирующий вызов)
-        print("Запускаем бота в режиме поллинга...")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Запускаем бота через asyncio для правильной обработки остановки
+        loop = asyncio.get_event_loop()
+        
+        # Правильная последовательность инициализации и запуска
+        loop.run_until_complete(app.initialize())
+        loop.run_until_complete(app.updater.initialize())
+        loop.run_until_complete(app.start())
+        loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
+        
+        try:
+            # Запускаем бесконечный цикл для поддержания работы бота
+            loop.run_forever()
+        except (KeyboardInterrupt, SystemExit):
+            # При остановке корректно завершаем работу
+            loop.run_until_complete(app.stop())
+            loop.run_until_complete(app.shutdown())
+        
         print("Бот остановлен.")
         
     except (KeyboardInterrupt, SystemExit):
@@ -2479,8 +2585,8 @@ def import_aiolibs():
         logger.warning("Асинхронные библиотеки не найдены, будут использованы синхронные версии")
         return False
 
-def set_user_lines_to_keep(user_id, lines):
-    """Установка количества строк для пользователя"""
+def set_user_lines_to_keep_sync(user_id, lines):
+    """Синхронная установка количества строк для пользователя"""
     conn = sqlite3.connect(DB_PATH)
     try:
         c = conn.cursor()
@@ -2489,5 +2595,36 @@ def set_user_lines_to_keep(user_id, lines):
             (user_id, lines)
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+
+async def get_user_lines_to_keep(user_id):
+    """Асинхронное получение количества строк для пользователя"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+            result = await cursor.fetchone()
+            if not result:
+                cursor = await conn.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+                result = await cursor.fetchone()
+            return result[0] if result else 10
+    except Exception as e:
+        logger.error(f"Ошибка при получении количества строк для пользователя {user_id}: {e}")
+        # Fallback к синхронной версии
+        return get_user_lines_to_keep_sync(user_id)
+
+def get_user_lines_to_keep_sync(user_id):
+    """Получение количества строк для пользователя (синхронная версия)"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        if not result:
+            c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+            result = c.fetchone()
+        return result[0] if result else 10
     finally:
         conn.close()
