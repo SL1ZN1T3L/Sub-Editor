@@ -41,7 +41,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+# Пути к файлам и директориям
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
+DB_PATH = os.path.join(BASE_DIR, 'bot_users.db')
+TEMP_STORAGE_DIR = os.path.join(BASE_DIR, 'temp_storage')
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR)
 # Общий лимит хранилища
 app.config['MAX_STORAGE_SIZE'] = 500 * 1024 * 1024  # 500 MB
 app.config['UPLOAD_FOLDER'] = 'temp_storage'
@@ -56,11 +62,6 @@ app.config['MAX_CHUNK_SIZE'] = 2 * 1024 * 1024  # 2 MB maximum chunk size
 # Константа для количества строк по умолчанию
 DEFAULT_LINES_TO_KEEP = 10
 
-# Пути к файлам и директориям
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'bot_users.db')
-TEMP_STORAGE_DIR = os.path.join(BASE_DIR, 'temp_storage')
-
 # Создаем необходимые директории
 os.makedirs(TEMP_STORAGE_DIR, exist_ok=True)
 
@@ -72,7 +73,7 @@ async def init_db_async():
         await conn.execute('''CREATE TABLE IF NOT EXISTS user_settings
                      (user_id INTEGER PRIMARY KEY,
                       lines_to_keep INTEGER DEFAULT 10,
-                      theme TEXT DEFAULT 'light')''')
+                      theme TEXT DEFAULT 'dark')''')
         
         # Проверяем, есть ли колонка theme
         cursor = await conn.execute("PRAGMA table_info(user_settings)")
@@ -225,14 +226,40 @@ def temp_storage(link_id):
 
         # Получаем user_id из базы асинхронно
         @run_async
-        async def get_user_id():
+        async def get_user_id_and_expires_at():
             async with aiosqlite.connect(DB_PATH) as conn:
-                cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+                cursor = await conn.execute('SELECT user_id, expires_at FROM temp_links WHERE link_id = ?', (link_id,))
                 result = await cursor.fetchone()
-                return result[0] if result else None
+                return result if result else (None, None)
         
-        user_id = get_user_id()
+        user_data = get_user_id_and_expires_at()
+        user_id, expires_at = user_data if user_data else (None, None)
         theme = get_user_theme(user_id) if user_id else 'light'
+        
+        # Рассчитываем оставшееся время до истечения срока хранилища
+        remaining_time = None
+        if expires_at:
+            try:
+                # Форматируем дату истечения без микросекунд
+                if '.' in expires_at:
+                    expires_at = expires_at.split('.')[0]
+                
+                # Получаем текущее московское время
+                moscow_tz = pytz.timezone('Europe/Moscow')
+                now = datetime.now(moscow_tz)
+                expires_datetime = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
+                expires_datetime = moscow_tz.localize(expires_datetime)
+                
+                # Рассчитываем оставшееся время
+                time_delta = expires_datetime - now
+                days = time_delta.days
+                hours, remainder = divmod(time_delta.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                
+                if days >= 0:
+                    remaining_time = f"{days} дн., {hours} ч., {minutes} мин."
+            except Exception as e:
+                logger.error(f"Ошибка при расчете оставшегося времени: {str(e)}")
         
         # Получаем список файлов
         storage_path = get_temp_storage_path(link_id)
@@ -255,14 +282,17 @@ def temp_storage(link_id):
         files.sort(key=lambda x: x['modified'], reverse=True)
         
         used_space = total_size / (1024 * 1024)
-        used_percentage = (total_size / app.config['MAX_STORAGE_SIZE']) * 100
+        used_percent = (total_size / app.config['MAX_STORAGE_SIZE']) * 100
         
         return render_template('temp_storage.html',
                              link_id=link_id,
                              files=files,
+                             total_size=total_size,
                              used_space=used_space,
-                             used_percentage=used_percentage,
-                             theme=theme)
+                             used_percent=used_percent,
+                             theme=theme,
+                             expires_at=expires_at,
+                             remaining_time=remaining_time)
         
     except Exception as e:
         logger.error(f"Ошибка при загрузке страницы: {str(e)}")

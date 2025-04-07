@@ -53,7 +53,11 @@
     </table>
 </div>
 
+{% if remaining_time %}
+<div class="expires-at">Срок действия до: {{ expires_at }} (осталось: {{ remaining_time }})</div>
+{% else %}
 <div class="expires-at">Срок действия до: {{ expires_at }}</div>
+{% endif %}
 
 <script>
     window.linkId = '{{ link_id }}';

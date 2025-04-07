@@ -363,6 +363,62 @@
                 opacity: 0;
             }
         }
+        
+        .expires-at {
+            margin-top: 15px;
+            padding: 10px 15px;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            font-weight: bold;
+            text-align: center;
+            font-size: 16px;
+            box-shadow: 0 2px 4px var(--shadow-color);
+            color: var(--text-color);
+        }
+        
+        .page-title {
+            text-align: center;
+            padding: 15px 25px;
+            margin-bottom: 30px;
+            background-color: var(--card-bg);
+            border: 2px solid var(--border-color);
+            border-radius: 10px;
+            box-shadow: 0 4px 8px var(--shadow-color);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .page-title h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-color);
+            position: relative;
+            z-index: 2;
+        }
+        
+        @keyframes rainbow-animation {
+            0% {background-position: 0% 50%;}
+            50% {background-position: 100% 50%;}
+            100% {background-position: 0% 50%;}
+        }
+        
+        .page-title::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 5px;
+            background: linear-gradient(90deg, 
+                #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #8f00ff, #ff0000);
+            background-size: 200% 200%;
+            animation: rainbow-animation 5s linear infinite;
+            z-index: 1;
+        }
     </style>
 </head>
 <body>
@@ -373,25 +429,33 @@
     </button>
     
     <div class="container mt-4">
-        <h1 class="mb-4">Временное хранилище</h1>
+        <div class="page-title">
+            <h1><i class="fas fa-cloud-upload-alt mr-2"></i> Временное хранилище</h1>
+        </div>
         
         <div class="card mb-4">
             <div class="card-body">
                 <div class="storage-info">
                     <div class="storage-progress">
                         <div class="progress">
-                            <div class="progress-bar" role="progressbar" 
-                                 style="width: {{ '%.1f' % used_percentage }}%" 
-                                 aria-valuenow="{{ '%.1f' % used_percentage }}" 
+                            <div class="progress-bar" 
+                                 style="width: {{ '%.1f' % used_percent }}%"
+                                 role="progressbar" 
+                                 aria-valuenow="{{ '%.1f' % used_percent }}"
                                  aria-valuemin="0" 
                                  aria-valuemax="100">
-                                {{ '%.1f' % used_percentage }}%
+                                {{ '%.1f' % used_percent }}%
                             </div>
                         </div>
                     </div>
                     <div class="storage-text">
                         Использовано: {{ '%.2f' % used_space }} MB из 500 MB
                     </div>
+                    {% if remaining_time %}
+                    <div class="expires-at">Срок действия до: {{ expires_at }} (осталось: {{ remaining_time }})</div>
+                    {% elif expires_at %}
+                    <div class="expires-at">Срок действия до: {{ expires_at }}</div>
+                    {% endif %}
                 </div>
                 <div class="mt-3 d-flex justify-content-end">
                     <button id="delete-storage" class="btn btn-danger">
@@ -414,6 +478,14 @@
                             <div class="progress-bar" role="progressbar" style="width: 0%"></div>
                         </div>
                         <div class="progress-text"></div>
+                        <div class="mt-3">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="toggleFilesList">
+                                Показать список файлов <i class="fas fa-chevron-down"></i>
+                            </button>
+                        </div>
+                        <div class="files-upload-list mt-2" style="display: none;">
+                            <!-- Здесь будет отображаться список загружаемых файлов -->
+                        </div>
                     </div>
                 </form>
             </div>
@@ -421,7 +493,6 @@
 
         <div class="card">
             <div class="card-body">
-                <h5 class="card-title">Файлы</h5>
                 <div class="files-list">
                     <h2>Файлы в хранилище</h2>
                     <div class="select-all-container">
@@ -477,6 +548,7 @@
         const linkId = '{{ link_id }}';
         let totalUploadSize = 0;
         let currentUploadedSize = 0;
+        let uploadControllers = new Map(); // Map для хранения AbortController для каждого файла
         
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -489,117 +561,313 @@
 
             const uploadProgress = document.querySelector('.upload-progress');
             const progressBar = uploadProgress.querySelector('.progress-bar');
+            const filesList = document.querySelector('.files-upload-list');
             uploadProgress.style.display = 'block';
+            filesList.innerHTML = ''; // Очищаем список
             
             // Рассчитываем общий размер всех файлов
             totalUploadSize = Array.from(files).reduce((total, file) => total + file.size, 0);
             currentUploadedSize = 0;
+            
+            // Создаем список файлов
+            Array.from(files).forEach((file, index) => {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-upload-item';
+                fileItem.id = `file-upload-${index}`;
+                fileItem.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center mb-2 p-2 border rounded">
+                        <div class="file-info">
+                            <div class="file-name text-truncate" style="max-width: 300px;">${file.name}</div>
+                            <div class="file-size">${formatFileSize(file.size)}</div>
+                        </div>
+                        <div class="file-progress" style="width: 60%;">
+                            <div class="progress" style="height: 10px;">
+                                <div class="progress-bar" role="progressbar" style="width: 0%" id="progress-${index}"></div>
+                            </div>
+                            <div class="progress-text small text-muted mt-1" id="progress-text-${index}">Ожидание...</div>
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger cancel-upload" data-index="${index}">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                `;
+                filesList.appendChild(fileItem);
+                
+                // Добавляем обработчик для кнопки отмены
+                fileItem.querySelector('.cancel-upload').addEventListener('click', function() {
+                    const fileIndex = this.getAttribute('data-index');
+                    cancelUpload(fileIndex);
+                });
+            });
+            
+            // Добавляем обработчик для кнопки показать/скрыть список
+            document.getElementById('toggleFilesList').addEventListener('click', function() {
+                const filesList = document.querySelector('.files-upload-list');
+                const isVisible = filesList.style.display !== 'none';
+                filesList.style.display = isVisible ? 'none' : 'block';
+                this.innerHTML = isVisible ? 
+                    'Показать список файлов <i class="fas fa-chevron-down"></i>' : 
+                    'Скрыть список файлов <i class="fas fa-chevron-up"></i>';
+            });
 
-            for (const file of files) {
-                try {
-                    let currentChunkSize = 1024 * 1024; // 1MB chunks
-                    const totalSize = file.size;
-                    let uploadedSize = 0;
+            // Запускаем загрузку файлов
+            for (let i = 0; i < files.length; i++) {
+                uploadFile(files[i], i);
+            }
+        });
+        
+        async function uploadFile(file, index) {
+            try {
+                let currentChunkSize = 1024 * 1024; // 1MB chunks
+                const totalSize = file.size;
+                let uploadedSize = 0;
 
-                    // Проверяем общий размер файла
-                    if (totalSize > 500 * 1024 * 1024) {
-                        alert(`Файл ${file.name} слишком большой. Максимальный размер файла - 500 MB`);
-                        continue;
+                // Проверяем общий размер файла
+                if (totalSize > 500 * 1024 * 1024) {
+                    updateFileStatus(index, 'error', `Файл слишком большой. Макс. размер: 500 MB`);
+                    return;
+                }
+                
+                // Проверяем, не превысит ли текущий файл лимит хранилища
+                const usedSpace = parseFloat('{{ used_space }}');
+                const remaining = 500 - usedSpace; // 500 MB - текущее использование
+                
+                if (totalSize / (1024 * 1024) > remaining) {
+                    updateFileStatus(index, 'error', `Файл превысит лимит хранилища. Осталось: ${remaining.toFixed(2)} MB`);
+                    return;
+                }
+
+                // Создаем AbortController для этого файла
+                const controller = new AbortController();
+                uploadControllers.set(index, controller);
+
+                let chunkNumber = 0;
+                updateFileStatus(index, 'uploading', 'Начало загрузки...');
+                
+                while (uploadedSize < totalSize) {
+                    if (!uploadControllers.has(index)) {
+                        console.log(`Загрузка файла ${file.name} была отменена, выходим из цикла отправки`);
+                        return;
                     }
+                    
+                    const chunk = file.slice(uploadedSize, Math.min(uploadedSize + currentChunkSize, totalSize));
+                    const formData = new FormData();
+                    formData.append('file', new Blob([chunk], { type: file.type }), file.name);
+                    formData.append('chunk', chunkNumber.toString());
+                    formData.append('chunks', Math.ceil(totalSize / currentChunkSize).toString());
+                    formData.append('total_size', totalSize.toString());
 
-                    let chunkNumber = 0;
-                    while (uploadedSize < totalSize) {
-                        const chunk = file.slice(uploadedSize, Math.min(uploadedSize + currentChunkSize, totalSize));
-                        const formData = new FormData();
-                        formData.append('file', new Blob([chunk], { type: file.type }), file.name);
-                        formData.append('chunk', chunkNumber.toString());
-                        formData.append('chunks', Math.ceil(totalSize / currentChunkSize).toString());
-                        formData.append('total_size', totalSize.toString());
+                    let retries = 3;
+                    let uploaded = false;
 
-                        let retries = 3;
-                        let uploaded = false;
-
-                        while (retries > 0 && !uploaded) {
-                            try {
-                                const response = await fetch(`/space/${linkId}/upload`, {
-                                    method: 'POST',
-                                    body: formData
-                                });
-
-                                if (!response.ok) {
-                                    if (response.status === 413) {
-                                        currentChunkSize = Math.floor(currentChunkSize / 2);
-                                        console.log(`Уменьшаем размер чанка до ${currentChunkSize} байт`);
-                                        if (currentChunkSize < 64 * 1024) {
-                                            throw new Error('Невозможно уменьшить размер чанка дальше');
-                                        }
-                                        continue;
-                                    }
-
-                                    const contentType = response.headers.get('content-type');
-                                    const errorText = contentType && contentType.includes('application/json') 
-                                        ? (await response.json()).error 
-                                        : await response.text();
-                                    throw new Error(errorText);
+                    while (retries > 0 && !uploaded) {
+                        try {
+                            // Если загрузка отменена - выходим немедленно
+                            if (!uploadControllers.has(index)) {
+                                console.log(`Загрузка файла ${file.name} была отменена после запроса`);
+                                // Пытаемся удалить частично загруженный файл
+                                try {
+                                    await fetch(`/space/${linkId}/delete/${file.name}`, {
+                                        method: 'POST'
+                                    });
+                                } catch (deleteErr) {
+                                    console.error('Ошибка при удалении частично загруженного файла:', deleteErr);
                                 }
-
-                                const result = await response.json();
-                                if (!result.success) {
-                                    throw new Error(result.error || 'Неизвестная ошибка');
-                                }
-
-                                uploadedSize += chunk.size;
-                                currentUploadedSize += chunk.size;
-                                
-                                // Обновляем общий прогресс загрузки
-                                const totalProgress = (currentUploadedSize / totalUploadSize) * 100;
-                                progressBar.style.width = `${totalProgress}%`;
-                                
-                                // Обновляем текст прогресса
-                                let progressText = document.querySelector('.upload-progress .progress-text');
-                                if (!progressText) {
-                                    progressText = document.createElement('div');
-                                    progressText.className = 'progress-text';
-                                    progressBar.parentElement.parentElement.appendChild(progressText);
-                                }
-                                progressText.textContent = `Загрузка: ${file.name} (${Math.round(totalProgress)}%)`;
-                                
-                                uploaded = true;
-                                chunkNumber++;
-
-                                // Добавляем небольшую задержку между чанками для более плавной анимации
-                                await new Promise(resolve => setTimeout(resolve, 50));
-
-                            } catch (error) {
-                                retries--;
-                                if (retries === 0) {
-                                    throw error;
-                                }
-                                console.log(`Ошибка при загрузке части ${chunkNumber + 1}, повторная попытка...`);
-                                await new Promise(resolve => setTimeout(resolve, 1000));
+                                return;
                             }
-                        }
 
-                        if (!uploaded) {
-                            throw new Error('Не удалось загрузить часть файла после всех попыток');
+                            const response = await fetch(`/space/${linkId}/upload`, {
+                                method: 'POST',
+                                body: formData,
+                                signal: controller.signal
+                            });
+
+                            if (!response.ok) {
+                                if (response.status === 413) {
+                                    currentChunkSize = Math.floor(currentChunkSize / 2);
+                                    if (currentChunkSize < 64 * 1024) {
+                                        throw new Error('Невозможно уменьшить размер чанка дальше');
+                                    }
+                                    continue;
+                                }
+
+                                const contentType = response.headers.get('content-type');
+                                const errorData = contentType && contentType.includes('application/json') 
+                                    ? await response.json()
+                                    : { error: await response.text() };
+                                
+                                // Проверяем на ошибку превышения лимита
+                                if (response.status === 400 && errorData.error && 
+                                    (errorData.error.includes('Превышен лимит') || 
+                                     errorData.error.includes('превыш'))) {
+                                    updateFileStatus(index, 'error', 'Превышен лимит хранилища');
+                                    // Явно удаляем контроллер, чтобы прервать загрузку
+                                    uploadControllers.delete(index);
+                                    showToast('Превышен лимит хранилища. Загрузка отменена.', 'error');
+                                    return; // Выходим из функции, прекращая загрузку
+                                }
+                                
+                                throw new Error(errorData.error || 'Неизвестная ошибка');
+                            }
+
+                            const result = await response.json();
+                            if (!result.success) {
+                                throw new Error(result.error || 'Неизвестная ошибка');
+                            }
+
+                            uploadedSize += chunk.size;
+                            currentUploadedSize += chunk.size;
+                            
+                            // Обновляем общий прогресс загрузки
+                            const totalProgress = (currentUploadedSize / totalUploadSize) * 100;
+                            document.querySelector('.upload-progress .progress-bar').style.width = `${totalProgress}%`;
+                            document.querySelector('.upload-progress .progress-text').textContent = 
+                                `Общий прогресс: ${Math.round(totalProgress)}%`;
+                            
+                            // Обновляем прогресс для текущего файла
+                            const fileProgress = (uploadedSize / totalSize) * 100;
+                            updateFileStatus(
+                                index, 
+                                'uploading', 
+                                `${formatFileSize(uploadedSize)} из ${formatFileSize(totalSize)} (${Math.round(fileProgress)}%)`,
+                                fileProgress
+                            );
+                            
+                            uploaded = true;
+                            chunkNumber++;
+
+                            await new Promise(resolve => setTimeout(resolve, 50));
+
+                        } catch (error) {
+                            if (error.name === 'AbortError') {
+                                updateFileStatus(index, 'cancelled', 'Загрузка отменена');
+                                return;
+                            }
+                            
+                            retries--;
+                            if (retries === 0) {
+                                updateFileStatus(index, 'error', `Ошибка: ${error.message}`);
+                                throw error;
+                            }
+                            
+                            updateFileStatus(index, 'retrying', `Повторная попытка ${3-retries}/3...`);
+                            await new Promise(resolve => setTimeout(resolve, 1000));
                         }
                     }
 
-                } catch (error) {
+                    if (!uploaded) {
+                        updateFileStatus(index, 'error', 'Не удалось загрузить после всех попыток');
+                        throw new Error('Не удалось загрузить часть файла после всех попыток');
+                    }
+                }
+
+                // Файл успешно загружен
+                updateFileStatus(index, 'completed', 'Загрузка завершена');
+                uploadControllers.delete(index);
+
+            } catch (error) {
+                if (error.name !== 'AbortError') {
                     console.error('Ошибка:', error);
-                    alert(`Ошибка при загрузке файла ${file.name}: ${error.message}`);
-                    continue;
+                    updateFileStatus(index, 'error', `Ошибка: ${error.message}`);
                 }
             }
             
-            // Добавляем небольшую задержку перед обновлением страницы
-            setTimeout(() => {
-                location.reload();
-            }, 500);
+            // Проверяем, остались ли еще загрузки
+            checkAllUploadsCompleted();
+        }
+        
+        function updateFileStatus(index, status, message, progress = null) {
+            const progressBar = document.getElementById(`progress-${index}`);
+            const progressText = document.getElementById(`progress-text-${index}`);
+            const fileItem = document.getElementById(`file-upload-${index}`);
             
-            // Скрываем прогресс-бар
-            uploadProgress.style.display = 'none';
-        });
+            if (!fileItem) return;
+            
+            if (progressBar && progress !== null) {
+                progressBar.style.width = `${progress}%`;
+            }
+            
+            if (progressText) {
+                progressText.textContent = message;
+            }
+            
+            // Обновляем стили в зависимости от статуса
+            if (status === 'uploading') {
+                progressBar.classList.remove('bg-danger', 'bg-success', 'bg-warning');
+                progressBar.classList.add('bg-primary');
+            } else if (status === 'completed') {
+                progressBar.classList.remove('bg-danger', 'bg-primary', 'bg-warning');
+                progressBar.classList.add('bg-success');
+                progressBar.style.width = '100%';
+            } else if (status === 'error') {
+                progressBar.classList.remove('bg-primary', 'bg-success', 'bg-warning');
+                progressBar.classList.add('bg-danger');
+            } else if (status === 'cancelled' || status === 'retrying') {
+                progressBar.classList.remove('bg-primary', 'bg-success', 'bg-danger');
+                progressBar.classList.add('bg-warning');
+            }
+        }
+        
+        function cancelUpload(fileIndex) {
+            const controller = uploadControllers.get(parseInt(fileIndex));
+            if (controller) {
+                controller.abort();
+                uploadControllers.delete(parseInt(fileIndex));
+                updateFileStatus(fileIndex, 'cancelled', 'Загрузка отменена');
+                
+                // Немедленно скрываем элемент интерфейса загрузки этого файла, чтобы предотвратить повторные запросы
+                const fileItem = document.getElementById(`file-upload-${fileIndex}`);
+                if (fileItem && fileItem.parentNode) {
+                    fileItem.style.opacity = '0.5';
+                    const cancelButton = fileItem.querySelector('.cancel-upload');
+                    if (cancelButton) {
+                        cancelButton.disabled = true;
+                        cancelButton.classList.add('disabled');
+                    }
+                }
+                
+                // Отправляем запрос на сервер для удаления частично загруженного файла
+                const filename = document.querySelector(`#file-upload-${fileIndex} .file-name`).textContent;
+                if (filename) {
+                    fetch(`/space/${linkId}/delete/${filename}`, {
+                        method: 'POST'
+                    }).catch(err => console.error('Не удалось удалить частично загруженный файл:', err));
+                }
+                
+                // Проверяем если все загрузки завершены или отменены
+                checkAllUploadsCompleted();
+            }
+        }
+        
+        function checkAllUploadsCompleted() {
+            // Проверяем активные загрузки
+            if (uploadControllers.size === 0) {
+                const allFiles = document.querySelectorAll('.file-upload-item');
+                const hasErrors = Array.from(allFiles).some(file => 
+                    file.querySelector('.progress-bar').classList.contains('bg-danger'));
+                const hasCancelled = Array.from(allFiles).some(file => 
+                    file.querySelector('.progress-bar').classList.contains('bg-warning') &&
+                    file.querySelector('.progress-text').textContent.includes('отменена'));
+                
+                if (hasCancelled) {
+                    showToast('Некоторые загрузки были отменены', 'error');
+                } else if (hasErrors) {
+                    showToast('При загрузке некоторых файлов произошли ошибки', 'error');
+                } else {
+                    showToast('Все файлы успешно загружены', 'success');
+                }
+                
+                // В любом случае перезагружаем страницу через 2 секунды
+                setTimeout(() => location.reload(), 2000);
+            }
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            else if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+            else return (bytes / 1073741824).toFixed(1) + ' GB';
+        }
 
         async function deleteFile(filename) {
             if (!confirm('Вы уверены, что хотите удалить этот файл?')) {
@@ -824,38 +1092,6 @@
         function handleError(error) {
             console.error('Ошибка:', error);
             showToast(error.message || 'Произошла ошибка при выполнении операции');
-        }
-
-        // Обновляем fetch запросы для использования showToast
-        async function uploadChunk(file, chunkNumber, totalChunks) {
-            try {
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('chunk_number', chunkNumber);
-                formData.append('total_chunks', totalChunks);
-                
-                const response = await fetch(`/space/${linkId}/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || 'Ошибка при загрузке файла');
-                }
-                
-                if (data.success) {
-                    updateProgress(file.name, ((chunkNumber + 1) / totalChunks) * 100);
-                    if (chunkNumber === totalChunks - 1) {
-                        showToast('Файл успешно загружен', 'success');
-                        setTimeout(() => location.reload(), 1000);
-                    }
-                }
-            } catch (error) {
-                handleError(error);
-                throw error;
-            }
         }
     </script>
 </body>
