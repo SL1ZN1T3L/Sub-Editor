@@ -42,3 +42,4 @@ logs/
 *copy*.py
 Sub-Editor.code-workspace
 *fix*.py
+/flask_session

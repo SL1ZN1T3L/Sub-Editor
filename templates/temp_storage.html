@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Временное хранилище</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -520,16 +521,16 @@
                                     <td>
                                         <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
                                     </td>
-                                    <td>{{ file.name }}</td>
-                                    <td>{{ "%.2f"|format(file.size / (1024 * 1024)) }} MB</td>
-                                    <td>{{ file.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                                    <td class="text-truncate" style="max-width: 200px;" title="{{ file.name|e }}">{{ file.name|e }}</td>
+                                    <td>{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
+                                    <td>{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
                                     <td class="file-actions">
-                                        <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}" 
+                                        <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}" 
                                            class="btn btn-download" title="Скачать">
                                             <i class="fas fa-download"></i>
                                         </a>
                                         <button class="btn btn-delete" 
-                                                onclick="deleteFile('{{ file.name }}')" 
+                                                onclick="deleteFile('{{ file.name|e|escapejs }}')" 
                                                 title="Удалить">
                                             <i class="fas fa-trash"></i>
                                         </button>
@@ -564,6 +565,9 @@
             const filesList = document.querySelector('.files-upload-list');
             uploadProgress.style.display = 'block';
             filesList.innerHTML = ''; // Очищаем список
+            
+            // Получаем CSRF-токен из метатега
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
             
             // Рассчитываем общий размер всех файлов
             totalUploadSize = Array.from(files).reduce((total, file) => total + file.size, 0);
@@ -618,17 +622,33 @@
         
         async function uploadFile(file, index) {
             try {
+                // Проверяем расширение файла перед загрузкой
+                const fileExtension = file.name.split('.').pop().toLowerCase();
+                const restrictedExtensions = ['php', 'exe', 'sh', 'bat', 'cmd', 'js', 'vbs', 'ps1', 'py', 'rb', 'pl'];
+                
+                if (restrictedExtensions.includes(fileExtension)) {
+                    const errorMessage = `Файл с расширением .${fileExtension} запрещен для загрузки`;
+                    updateFileStatus(index, 'error', errorMessage);
+                    
+                    // Обновляем текст под основным прогресс-баром
+                    const mainProgressText = document.querySelector('.upload-progress .progress-text');
+                    mainProgressText.innerHTML = `<span class="text-danger">Ошибка: ${errorMessage} (${file.name})</span>`;
+                    
+                    return;
+                }
+                
                 let currentChunkSize = 1024 * 1024; // 1MB chunks
                 const totalSize = file.size;
                 let uploadedSize = 0;
-
-                // Проверяем общий размер файла
-                if (totalSize > 500 * 1024 * 1024) {
+                
+                // Ограничиваем максимальный размер файла
+                const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB
+                if (totalSize > MAX_FILE_SIZE) {
                     updateFileStatus(index, 'error', `Файл слишком большой. Макс. размер: 500 MB`);
                     return;
                 }
                 
-                // Проверяем, не превысит ли текущий файл лимит хранилища
+                // Безопасная проверка лимита хранилища
                 const usedSpace = Math.max(0, parseFloat('{{ used_space }}'));
                 const remaining = Math.max(0, 500 - usedSpace); // 500 MB - текущее использование
                 
@@ -650,9 +670,25 @@
                 let chunkNumber = 0;
                 updateFileStatus(index, 'uploading', 'Начало загрузки...');
                 
+                // Создаем уникальный идентификатор сессии загрузки
+                const uploadSessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                
                 while (uploadedSize < totalSize) {
                     if (!uploadControllers.has(index)) {
                         console.log(`Загрузка файла ${file.name} была отменена, выходим из цикла отправки`);
+                        
+                        // Пытаемся удалить частично загруженный файл
+                        try {
+                            await fetch(`/space/${linkId}/delete/${file.name}`, {
+                                method: 'POST',
+                                headers: {
+                                    'X-CSRF-Token': csrfToken
+                                }
+                            });
+                        } catch (e) {
+                            console.error('Ошибка при удалении частично загруженного файла:', e);
+                        }
+                        
                         return;
                     }
                     
@@ -662,6 +698,7 @@
                     formData.append('chunk', chunkNumber.toString());
                     formData.append('chunks', Math.ceil(totalSize / currentChunkSize).toString());
                     formData.append('total_size', totalSize.toString());
+                    formData.append('upload_session_id', uploadSessionId);
 
                     let retries = 3;
                     let uploaded = false;
@@ -674,7 +711,10 @@
                                 // Пытаемся удалить частично загруженный файл
                                 try {
                                     await fetch(`/space/${linkId}/delete/${file.name}`, {
-                                        method: 'POST'
+                                        method: 'POST',
+                                        headers: {
+                                            'X-CSRF-Token': csrfToken
+                                        }
                                     });
                                 } catch (deleteErr) {
                                     console.error('Ошибка при удалении частично загруженного файла:', deleteErr);
@@ -685,6 +725,9 @@
                             const response = await fetch(`/space/${linkId}/upload`, {
                                 method: 'POST',
                                 body: formData,
+                                headers: {
+                                    'X-CSRF-Token': csrfToken
+                                },
                                 signal: controller.signal
                             });
 
@@ -857,10 +900,22 @@
                 
                 if (hasCancelled) {
                     showToast('Некоторые загрузки были отменены', 'error');
+                    document.querySelector('.upload-progress .progress-text').innerHTML = 
+                        '<span class="text-warning">Некоторые загрузки были отменены</span>';
                 } else if (hasErrors) {
+                    // Соберем все ошибки для показа
+                    const errorMessages = Array.from(allFiles)
+                        .filter(file => file.querySelector('.progress-bar').classList.contains('bg-danger'))
+                        .map(file => file.querySelector('.progress-text').textContent)
+                        .join('; ');
+                    
                     showToast('При загрузке некоторых файлов произошли ошибки', 'error');
+                    document.querySelector('.upload-progress .progress-text').innerHTML = 
+                        `<span class="text-danger">Ошибки: ${escapeHtml(errorMessages)}</span>`;
                 } else {
                     showToast('Все файлы успешно загружены', 'success');
+                    document.querySelector('.upload-progress .progress-text').innerHTML = 
+                        '<span class="text-success">Все файлы успешно загружены</span>';
                 }
                 
                 // В любом случае перезагружаем страницу через 2 секунды
@@ -1065,32 +1120,29 @@
 
         // Функция для показа уведомлений
         function showToast(message, type = 'error') {
-            const container = document.querySelector('.toast-container');
+            const toastContainer = document.querySelector('.toast-container');
+            if (!toastContainer) {
+                console.error('Контейнер для уведомлений не найден');
+                return;
+            }
+            
             const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
+            toast.className = `toast ${type === 'error' ? 'toast-error' : type === 'success' ? 'toast-success' : 'toast-info'}`;
+            toast.innerHTML = `<div class="toast-message">${escapeHtml(message)}</div>`;
+            toastContainer.appendChild(toast);
             
-            const icon = type === 'error' ? '❌' : '✅';
+            // Показываем тост и скрываем через некоторое время
+            setTimeout(function() {
+                toast.style.opacity = '1';
+            }, 10);
             
-            toast.innerHTML = `
-                <span class="toast-icon">${icon}</span>
-                <span class="toast-message">${message}</span>
-                <span class="toast-close">×</span>
-            `;
-            
-            container.appendChild(toast);
-            
-            // Обработчик для кнопки закрытия
-            toast.querySelector('.toast-close').addEventListener('click', () => {
-                toast.style.animation = 'slideOut 0.3s ease-out forwards';
-                setTimeout(() => container.removeChild(toast), 300);
-            });
-            
-            // Автоматическое закрытие через 5 секунд
-            setTimeout(() => {
-                if (container.contains(toast)) {
-                    toast.style.animation = 'slideOut 0.3s ease-out forwards';
-                    setTimeout(() => container.removeChild(toast), 300);
-                }
+            setTimeout(function() {
+                toast.style.opacity = '0';
+                setTimeout(function() {
+                    if (toast.parentElement) {
+                        toast.parentElement.removeChild(toast);
+                    }
+                }, 300);
             }, 5000);
         }
 
@@ -1098,6 +1150,134 @@
         function handleError(error) {
             console.error('Ошибка:', error);
             showToast(error.message || 'Произошла ошибка при выполнении операции');
+        }
+
+        // Функция для безопасного эскейпа HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Устанавливаем CSRF-токен для всех AJAX запросов
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        
+        // Добавляем CSRF-токен к каждому AJAX запросу
+        function setupAjaxCSRF() {
+            const oldXHROpen = window.XMLHttpRequest.prototype.open;
+            window.XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+                const xhr = this;
+                oldXHROpen.apply(xhr, arguments);
+                
+                if (method.toLowerCase() === 'post') {
+                    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+                }
+            };
+        }
+        setupAjaxCSRF();
+        
+        // Добавляем CSRF токен к Dropzone запросам
+        if (typeof Dropzone !== 'undefined') {
+            Dropzone.prototype.defaultOptions.headers = {
+                'X-CSRF-Token': csrfToken
+            };
+        }
+        
+        // Функция удаления файла с CSRF защитой
+        async function deleteFile(filename) {
+            if (confirm(`Вы уверены, что хотите удалить файл "${escapeHtml(filename)}"?`)) {
+                try {
+                    const response = await fetch(`/space/${linkId}/delete/${encodeURIComponent(filename)}`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-Token': csrfToken
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        location.reload();
+                    } else if (result.error) {
+                        showToast(result.error, 'error');
+                    }
+                } catch (error) {
+                    showToast('Произошла ошибка при удалении файла', 'error');
+                    console.error('Ошибка:', error);
+                }
+            }
+        }
+        
+        // Функция удаления всех файлов с CSRF защитой
+        async function deleteAllFiles() {
+            if (confirm('Вы уверены, что хотите удалить все файлы и хранилище?')) {
+                try {
+                    const response = await fetch(`/space/${linkId}/delete-all`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-Token': csrfToken
+                        }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        window.location.href = '/';
+                    } else if (result.error) {
+                        showToast(result.error, 'error');
+                    }
+                } catch (error) {
+                    showToast('Произошла ошибка при удалении хранилища', 'error');
+                    console.error('Ошибка:', error);
+                }
+            }
+        }
+        
+        // Скачивание нескольких файлов
+        async function downloadSelected() {
+            const checkboxes = document.querySelectorAll('.file-checkbox:checked');
+            const files = [];
+            
+            if (checkboxes.length === 0) {
+                showToast('Выберите файлы для скачивания', 'error');
+                return;
+            }
+            
+            checkboxes.forEach(checkbox => {
+                files.push(checkbox.value);
+            });
+            
+            try {
+                const response = await fetch(`/space/${linkId}/download-multiple`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken
+                    },
+                    body: JSON.stringify({
+                        files: files
+                    })
+                });
+                
+                if (response.ok) {
+                    // Создаем элемент для принудительной загрузки файла
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `files_${linkId}.zip`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    a.remove();
+                } else {
+                    const text = await response.text();
+                    showToast(`Ошибка при скачивании файлов: ${escapeHtml(text)}`, 'error');
+                }
+            } catch (error) {
+                showToast('Произошла ошибка при скачивании файлов', 'error');
+                console.error('Ошибка:', error);
+            }
         }
     </script>
 </body>
