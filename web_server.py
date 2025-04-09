@@ -18,6 +18,9 @@ from functools import wraps
 import pytz
 import re
 from dotenv import load_dotenv
+import html
+import hashlib
+from collections import defaultdict
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -103,6 +106,11 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 
+# Защита от брут-форса и rate limiting
+app.config['MAX_REQUESTS_PER_MINUTE'] = int(os.getenv('MAX_REQUESTS_PER_MINUTE', 60))
+app.config['MAX_FAILED_ATTEMPTS'] = int(os.getenv('MAX_FAILED_ATTEMPTS', 5))
+app.config['BLOCK_TIME_SECONDS'] = int(os.getenv('BLOCK_TIME_SECONDS', 300))  # 5 минут
+
 # Отключаем кэширование ответов для предотвращения устаревших данных
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
@@ -118,6 +126,173 @@ app.config['MAX_CHUNK_SIZE'] = int(os.getenv('MAX_CHUNK_SIZE', 2)) * 1024 * 1024
 
 # Константа для количества строк по умолчанию
 DEFAULT_LINES_TO_KEEP = int(os.getenv('DEFAULT_LINES_TO_KEEP', 10))
+
+# Хранилище для rate limiting и защиты от брут-форса
+request_counters = defaultdict(lambda: {'count': 0, 'reset_time': time.time() + 60})
+failed_attempts = defaultdict(lambda: {'count': 0, 'blocked_until': 0})
+
+# Rate limiting и защита от брут-форса
+def check_rate_limit(ip_address):
+    """Проверяет ограничение частоты запросов для IP-адреса"""
+    current_time = time.time()
+    counter = request_counters[ip_address]
+    
+    # Сбрасываем счетчик каждую минуту
+    if current_time > counter['reset_time']:
+        counter['count'] = 1
+        counter['reset_time'] = current_time + 60
+        return True
+    
+    # Увеличиваем счетчик
+    counter['count'] += 1
+    
+    # Проверяем превышение лимита
+    if counter['count'] > app.config['MAX_REQUESTS_PER_MINUTE']:
+        return False
+    
+    return True
+
+def is_ip_blocked(ip_address):
+    """Проверяет, заблокирован ли IP-адрес"""
+    current_time = time.time()
+    data = failed_attempts[ip_address]
+    
+    # Если время блокировки прошло, снимаем блокировку
+    if data['blocked_until'] > 0 and current_time > data['blocked_until']:
+        data['blocked_until'] = 0
+        data['count'] = 0
+        return False
+    
+    return data['blocked_until'] > 0
+
+def record_failed_attempt(ip_address):
+    """Записывает неудачную попытку для IP-адреса"""
+    data = failed_attempts[ip_address]
+    data['count'] += 1
+    
+    # Если превышено максимальное количество попыток, блокируем IP
+    if data['count'] >= app.config['MAX_FAILED_ATTEMPTS']:
+        data['blocked_until'] = time.time() + app.config['BLOCK_TIME_SECONDS']
+        logger.warning(f"IP {ip_address} заблокирован на {app.config['BLOCK_TIME_SECONDS']} секунд после {data['count']} неудачных попыток")
+
+def rate_limit_middleware():
+    """Middleware для применения rate limiting к запросам"""
+    ip_address = request.remote_addr
+    
+    # Проверяем блокировку IP
+    if is_ip_blocked(ip_address):
+        return "Слишком много запросов. Пожалуйста, повторите позже.", 429
+    
+    # Проверяем rate limit
+    if not check_rate_limit(ip_address):
+        # Записываем неудачную попытку
+        record_failed_attempt(ip_address)
+        return "Превышен лимит запросов. Пожалуйста, повторите позже.", 429
+    
+    return None
+
+@app.before_request
+def before_request_middleware():
+    """Middleware, выполняемый перед каждым запросом"""
+    # Сохраняем время начала запроса для измерения длительности
+    request.start_time = time.time()
+    
+    # Применяем rate limiting
+    rate_limit_result = rate_limit_middleware()
+    if rate_limit_result:
+        return rate_limit_result
+    
+    # Добавляем случайный идентификатор сессии для предотвращения атак на фиксацию сессии
+    if 'session_id' not in session:
+        session['session_id'] = secrets.token_hex(16)
+    
+    # Периодическое обновление CSRF-токена
+    if 'csrf_last_updated' not in session or time.time() - session.get('csrf_last_updated', 0) > 3600:
+        session['csrf_token'] = secrets.token_hex(16)
+        session['csrf_last_updated'] = time.time()
+
+# Добавляем заголовки безопасности для всех ответов
+@app.after_request
+def add_security_headers(response):
+    """Добавляет заголовки безопасности к каждому ответу"""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://netdna.bootstrapcdn.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdnjs.cloudflare.com;"
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    
+    # Устанавливаем заголовок Referrer-Policy для контроля утечек Referrer
+    response.headers['Referrer-Policy'] = 'same-origin'
+    
+    # Устанавливаем Feature-Policy для ограничения опасных функций
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+    
+    # Для API-ответов с JSON не нужны некоторые заголовки
+    if response.mimetype == 'application/json':
+        # Для JSON-ответов некоторые CSP-директивы не применимы
+        response.headers['Content-Security-Policy'] = "default-src 'none'"
+    
+    # Для файлов разного типа нужны разные заголовки
+    elif response.mimetype.startswith('image/'):
+        response.headers['Content-Disposition'] = 'inline'
+    elif response.mimetype in ['application/octet-stream', 'application/zip']:
+        # Для загружаемых файлов устанавливаем Content-Disposition: attachment
+        if 'Content-Disposition' not in response.headers:
+            response.headers['Content-Disposition'] = 'attachment'
+    
+    return response
+
+@app.after_request
+def log_request(response):
+    """Логирует информацию о запросе после его завершения"""
+    # Вычисляем время выполнения запроса
+    duration = 0
+    if hasattr(request, 'start_time'):
+        duration = time.time() - request.start_time
+    
+    # Получаем IP-адрес с учётом возможных прокси
+    ip_address = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip_address and ',' in ip_address:
+        # Если передано несколько IP через X-Forwarded-For, берём первый
+        ip_address = ip_address.split(',')[0].strip()
+    
+    # Ограничиваем длину User-Agent для предотвращения атак
+    user_agent = request.headers.get('User-Agent', '')[:255]
+    
+    # Логируем запрос в файл
+    log_message = f"{ip_address} - {request.method} {request.path} - {response.status_code} - {duration:.2f}s - {user_agent}"
+    if response.status_code >= 400:
+        logger.warning(log_message)
+    else:
+        logger.info(log_message)
+        
+    # Асинхронно сохраняем информацию о запросе в базу данных
+    @run_async
+    async def log_to_db():
+        try:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            path = request.path[:255]  # Ограничиваем длину пути
+            method = request.method[:10]  # Ограничиваем длину метода
+            
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute(
+                    'INSERT INTO access_log (timestamp, ip_address, user_agent, request_path, request_method, status_code, response_time) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (current_time, ip_address, user_agent, path, method, response.status_code, duration)
+                )
+                await conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка при логировании запроса в БД: {str(e)}")
+    
+    # Запускаем асинхронное логирование, только если это не обращение к статическим файлам
+    if not request.path.startswith('/static/'):
+        try:
+            log_to_db()
+        except Exception as e:
+            logger.error(f"Ошибка при запуске асинхронного логирования: {str(e)}")
+    
+    return response
 
 # Создаем необходимые директории
 os.makedirs(TEMP_STORAGE_DIR, exist_ok=True)
@@ -136,79 +311,114 @@ logger.info(f"CSRF_PROTECTION_ENABLED: {CSRF_PROTECTION_ENABLED}")
 # Инициализация базы данных
 async def init_db_async():
     """Асинхронная инициализация базы данных"""
-    async with aiosqlite.connect(DB_PATH) as conn:
-        # Создаем таблицу настроек пользователя, если её нет
-        await conn.execute('''CREATE TABLE IF NOT EXISTS user_settings
-                     (user_id INTEGER PRIMARY KEY,
-                      lines_to_keep INTEGER DEFAULT 10,
-                      theme TEXT DEFAULT 'dark')''')
-        
-        # Проверяем, есть ли колонка theme
-        cursor = await conn.execute("PRAGMA table_info(user_settings)")
-        columns_raw = await cursor.fetchall()
-        columns = [column[1] for column in columns_raw]
-        
-        # Если колонки theme нет, добавляем её
-        if 'theme' not in columns:
-            await conn.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "light"')
-        
-        # Проверяем, есть ли таблица temp_links
-        cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='temp_links'")
-        table_exists = await cursor.fetchone()
-        
-        # Если таблица не существует, создаем её
-        if not table_exists:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS temp_links (
-                    link_id TEXT PRIMARY KEY,
-                    expires_at TEXT NOT NULL,
-                    user_id INTEGER,
-                    created_at TEXT
-                )
-            ''')
-            logger.info("Создана таблица temp_links")
-        
-        # Если таблица существует, проверяем наличие колонки created_at
-        else:
-            cursor = await conn.execute("PRAGMA table_info(temp_links)")
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Включаем защиту от внешних ключей
+            await conn.execute("PRAGMA foreign_keys = ON")
+            
+            # Включаем WAL-режим для улучшения конкурентности и безопасности
+            await conn.execute("PRAGMA journal_mode = WAL")
+            
+            # Создаем таблицу настроек пользователя, если её нет
+            await conn.execute('''CREATE TABLE IF NOT EXISTS user_settings
+                         (user_id INTEGER PRIMARY KEY,
+                          lines_to_keep INTEGER DEFAULT 10,
+                          theme TEXT DEFAULT 'dark')''')
+            
+            # Проверяем, есть ли колонка theme
+            cursor = await conn.execute("PRAGMA table_info(user_settings)")
             columns_raw = await cursor.fetchall()
             columns = [column[1] for column in columns_raw]
             
-            # Если колонки created_at нет, добавляем её
-            if 'created_at' not in columns:
-                try:
-                    # Добавляем колонку created_at
-                    await conn.execute('ALTER TABLE temp_links ADD COLUMN created_at TEXT')
-                    
-                    # Обновляем значения created_at на основе expires_at
-                    # Предполагаем, что хранилище было создано за 7 дней до истечения срока
-                    cursor = await conn.execute('SELECT link_id, expires_at FROM temp_links')
-                    links = await cursor.fetchall()
-                    
-                    for link in links:
-                        link_id, expires_at = link
-                        if expires_at:
-                            # Очищаем от микросекунд
-                            if '.' in expires_at:
-                                expires_at = expires_at.split('.')[0]
-                                
-                            try:
-                                # Преобразуем в datetime и вычитаем 7 дней
-                                expires_datetime = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
-                                created_datetime = expires_datetime - timedelta(days=7)
-                                created_at = created_datetime.strftime('%Y-%m-%d %H:%M:%S')
-                                
-                                # Обновляем запись
-                                await conn.execute('UPDATE temp_links SET created_at = ? WHERE link_id = ?', 
-                                                (created_at, link_id))
-                            except Exception as e:
-                                logger.error(f"Ошибка при обновлении created_at для {link_id}: {str(e)}")
-                    
-                    logger.info("Добавлена колонка created_at в таблицу temp_links")
-                except Exception as e:
-                    logger.error(f"Ошибка при добавлении колонки created_at: {str(e)}")
-        
-        await conn.commit()
+            # Если колонки theme нет, добавляем её
+            if 'theme' not in columns:
+                await conn.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "light"')
+            
+            # Проверяем, есть ли таблица temp_links
+            cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='temp_links'")
+            table_exists = await cursor.fetchone()
+            
+            # Если таблица не существует, создаем её
+            if not table_exists:
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS temp_links (
+                        link_id TEXT PRIMARY KEY,
+                        expires_at TEXT NOT NULL,
+                        user_id INTEGER,
+                        created_at TEXT
+                    )
+                ''')
+                logger.info("Создана таблица temp_links")
+            
+            # Если таблица существует, проверяем наличие колонки created_at
+            else:
+                cursor = await conn.execute("PRAGMA table_info(temp_links)")
+                columns_raw = await cursor.fetchall()
+                columns = [column[1] for column in columns_raw]
+                
+                # Если колонки created_at нет, добавляем её
+                if 'created_at' not in columns:
+                    try:
+                        # Добавляем колонку created_at
+                        await conn.execute('ALTER TABLE temp_links ADD COLUMN created_at TEXT')
+                        
+                        # Обновляем значения created_at на основе expires_at
+                        # Предполагаем, что хранилище было создано за 7 дней до истечения срока
+                        cursor = await conn.execute('SELECT link_id, expires_at FROM temp_links')
+                        links = await cursor.fetchall()
+                        
+                        for link in links:
+                            link_id, expires_at = link
+                            if expires_at:
+                                # Очищаем от микросекунд
+                                if '.' in expires_at:
+                                    expires_at = expires_at.split('.')[0]
+                                    
+                                try:
+                                    # Преобразуем в datetime и вычитаем 7 дней
+                                    expires_datetime = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
+                                    created_datetime = expires_datetime - timedelta(days=7)
+                                    created_at = created_datetime.strftime('%Y-%m-%d %H:%M:%S')
+                                    
+                                    # Обновляем запись с использованием параметризованного запроса
+                                    await conn.execute('UPDATE temp_links SET created_at = ? WHERE link_id = ?', 
+                                                    (created_at, link_id))
+                                except Exception as e:
+                                    logger.error(f"Ошибка при обновлении created_at для {link_id}: {str(e)}")
+                        
+                        logger.info("Добавлена колонка created_at в таблицу temp_links")
+                    except Exception as e:
+                        logger.error(f"Ошибка при добавлении колонки created_at: {str(e)}")
+            
+            # Добавляем индекс для ускорения поиска по expires_at
+            try:
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_temp_links_expires_at ON temp_links(expires_at)')
+                logger.info("Создан индекс на колонку expires_at")
+            except Exception as e:
+                logger.error(f"Ошибка при создании индекса: {str(e)}")
+                
+            # Создаем таблицу для логирования доступа, если её нет
+            try:
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS access_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        ip_address TEXT,
+                        user_agent TEXT,
+                        request_path TEXT,
+                        request_method TEXT,
+                        status_code INTEGER,
+                        response_time REAL
+                    )
+                ''')
+                logger.info("Создана таблица access_log")
+            except Exception as e:
+                logger.error(f"Ошибка при создании таблицы access_log: {str(e)}")
+                
+            await conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
+        raise
 
 # Синхронная обертка для инициализации базы данных
 def init_db():
@@ -358,12 +568,43 @@ def set_user_theme(user_id, theme):
 # Функция для проверки валидности расширения файла
 def allowed_file(filename):
     """Проверяет, что загружаемый файл имеет разрешенное расширение"""
-    if '.' not in filename:
+    # Проверяем на валидность имени файла
+    if not filename or '.' not in filename:
         return False
-    extension = filename.rsplit('.', 1)[1].lower()
+        
+    # Нормализуем имя файла
+    filename = filename.lower()
+    
+    # Получаем расширение, защищаясь от двойных расширений (например, file.php.jpg)
+    extensions = filename.split('.')
+    if len(extensions) > 2:
+        # Проверяем все расширения кроме первого
+        for ext in extensions[1:]:
+            if ext in app.config['BLOCKED_EXTENSIONS']:
+                return False
+    
+    # Проверяем основное расширение
+    extension = extensions[-1]
     
     # Сначала проверяем запрещенные расширения (приоритет)
     if extension in app.config['BLOCKED_EXTENSIONS']:
+        return False
+    
+    # Проверяем на потенциально опасные последовательности символов в имени
+    dangerous_patterns = [
+        '../', './', '/..',  # Path traversal
+        '\\', '%00',         # Null byte injection
+        '<?', '<?php',       # PHP tags
+        '<script', 'javascript:', 'vbscript:',  # XSS
+        'cmd.exe', 'powershell', 'bash'  # Command execution
+    ]
+    
+    for pattern in dangerous_patterns:
+        if pattern in filename:
+            return False
+    
+    # Дополнительная проверка на очень длинные имена файлов
+    if len(filename) > 255:
         return False
     
     # Если список разрешенных расширений пуст, разрешаем все (кроме заблокированных)
@@ -375,15 +616,50 @@ def allowed_file(filename):
 # CSRF защита
 def generate_csrf_token():
     """Генерирует CSRF токен для защиты форм"""
-    if 'csrf_token' not in session:
-        session['csrf_token'] = secrets.token_hex(16)
-    return session['csrf_token']
+    # Если токен уже существует и не нуждается в обновлении, используем его
+    if 'csrf_token' in session and 'csrf_last_updated' in session:
+        last_updated = session.get('csrf_last_updated', 0)
+        # Обновляем токен каждый час
+        if time.time() - last_updated < 3600:
+            return session['csrf_token']
+    
+    # Генерируем новый токен с использованием криптостойкого генератора случайных чисел
+    token = secrets.token_hex(32)
+    session['csrf_token'] = token
+    session['csrf_last_updated'] = time.time()
+    return token
 
 def check_csrf_token():
     """Проверяет CSRF токен в запросе"""
-    token = request.headers.get('X-CSRF-Token')
-    if not token or token != session.get('csrf_token'):
+    # Пробуем получить токен из разных источников
+    token = None
+    
+    # Из заголовка X-CSRF-Token
+    header_token = request.headers.get('X-CSRF-Token')
+    if header_token:
+        token = header_token
+    
+    # Из формы (form data)
+    form_token = request.form.get('csrf_token')
+    if not token and form_token:
+        token = form_token
+    
+    # Из JSON-данных
+    if not token and request.is_json:
+        json_data = request.get_json(silent=True)
+        if json_data and isinstance(json_data, dict):
+            json_token = json_data.get('csrf_token')
+            if json_token:
+                token = json_token
+    
+    # Проверяем токен
+    if not token or not session.get('csrf_token') or not secrets.compare_digest(token, session.get('csrf_token')):
+        # Записываем попытку CSRF-атаки
+        ip = request.remote_addr
+        logger.warning(f"CSRF-атака предотвращена с IP {ip}")
+        record_failed_attempt(ip)  # Записываем неудачную попытку для IP
         return False
+    
     return True
 
 # Защита маршрутов от CSRF атак
@@ -394,10 +670,10 @@ def csrf_protected(f):
         if not app.config['CSRF_PROTECTION_ENABLED']:
             return f(*args, **kwargs)
             
-        if request.method == 'POST':
+        if request.method in ['POST', 'PUT', 'DELETE', 'PATCH']:
             if not check_csrf_token():
                 logger.warning("CSRF-атака предотвращена")
-                return jsonify({'error': 'Недействительный CSRF токен'}), 403
+                return jsonify({'error': 'Недействительный CSRF токен. Пожалуйста, обновите страницу и повторите попытку.'}), 403
         return f(*args, **kwargs)
     return decorated_function
 
@@ -544,8 +820,13 @@ def temp_storage(link_id):
                     try:
                         file_size = max(0, os.path.getsize(file_path))
                         total_size += file_size
+                        
+                        # Экранируем имя файла для предотвращения XSS
+                        safe_filename = html.escape(filename)
+                        
                         files.append({
-                            'name': filename,
+                            'name': safe_filename,
+                            'raw_name': filename,  # Оригинальное имя для операций с файлами
                             'size': file_size,
                             'modified': datetime.fromtimestamp(os.path.getmtime(file_path))
                         })
@@ -611,10 +892,30 @@ def upload_file(link_id):
 
         # Получаем информацию о чанках и сессии загрузки
         try:
-            chunk_number = max(0, int(request.form.get('chunk', '0')))
-            total_chunks = max(1, int(request.form.get('chunks', '1')))
-            total_size = max(0, int(request.form.get('total_size', '0')))
-            upload_session_id = request.form.get('upload_session_id', '')
+            # Используем strip для предотвращения атак с вводом манипулированных данных
+            chunk_number_str = request.form.get('chunk', '0').strip()
+            total_chunks_str = request.form.get('chunks', '1').strip()
+            total_size_str = request.form.get('total_size', '0').strip()
+            upload_session_id = request.form.get('upload_session_id', '').strip()
+            
+            # Строгая проверка на числовые значения
+            if not chunk_number_str.isdigit() or not total_chunks_str.isdigit() or not total_size_str.isdigit():
+                logger.error(f"Получены некорректные числовые параметры: chunk={chunk_number_str}, chunks={total_chunks_str}, size={total_size_str}")
+                return jsonify({'error': 'Параметры загрузки должны быть числовыми значениями'}), 400
+                
+            chunk_number = max(0, int(chunk_number_str))
+            total_chunks = max(1, int(total_chunks_str))
+            total_size = max(0, int(total_size_str))
+            
+            # Проверка разумных пределов
+            if total_chunks > 10000:
+                logger.error(f"Слишком большое количество чанков: {total_chunks}")
+                return jsonify({'error': 'Превышено максимальное количество чанков'}), 400
+                
+            # Проверка upload_session_id на безопасность (только буквенно-цифровые символы)
+            if not re.match(r'^[a-zA-Z0-9_-]*$', upload_session_id):
+                logger.warning(f"Некорректный upload_session_id: {upload_session_id}")
+                return jsonify({'error': 'Недействительный идентификатор сессии'}), 400
         except (ValueError, TypeError) as e:
             logger.error(f"Некорректные параметры загрузки: {str(e)}")
             return jsonify({'error': 'Некорректные параметры загрузки'}), 400
@@ -624,9 +925,16 @@ def upload_file(link_id):
         chunk_size = file.tell()  # Получаем размер чанка
         file.seek(0)  # Возвращаемся в начало
         
+        # Добавляем проверку на нулевой размер чанка
         if chunk_size <= 0:
             logger.error(f"Попытка загрузки файла с некорректным размером чанка: {chunk_size}")
             return jsonify({'error': 'Некорректный размер чанка'}), 400
+            
+        # Проверка на максимальный размер чанка
+        if chunk_size > app.config['MAX_CHUNK_SIZE']:
+            logger.error(f"Превышен максимальный размер чанка: {chunk_size} > {app.config['MAX_CHUNK_SIZE']}")
+            max_chunk_mb = app.config['MAX_CHUNK_SIZE'] / (1024*1024)
+            return jsonify({'error': f'Превышен максимальный размер чанка ({max_chunk_mb:.1f} MB)'}), 400
         
         # Проверка максимального размера файла из конфигурации
         if total_size <= 0 or total_size > app.config['MAX_FILE_SIZE']:
@@ -639,6 +947,9 @@ def upload_file(link_id):
         
         # Формируем безопасное имя файла
         filename = secure_filename(original_filename)
+        if not filename:
+            logger.error(f"Не удалось создать безопасное имя файла из {original_filename}")
+            return jsonify({'error': 'Недопустимое имя файла'}), 400
         
         # Установка и проверка сессии загрузки для обработки конкурентных загрузок
         if chunk_number == 0:
@@ -918,6 +1229,12 @@ def delete_all_storage(link_id):
 def download_file(link_id, filename):
     """Скачивание файла из временного хранилища"""
     try:
+        # Проверка на безопасность link_id (только буквенно-цифровые символы)
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка скачивания с некорректным link_id: {link_id}")
+            return "Временное хранилище не найдено", 404
+            
+        # Проверяем валидность хранилища
         if not is_temp_storage_valid(link_id):
             return "Временное хранилище не найдено или срок его действия истек", 404
         
@@ -927,6 +1244,11 @@ def download_file(link_id, filename):
             logger.error(f"Попытка скачивания файла с пустым или небезопасным именем: {filename}")
             return "Недопустимое имя файла", 400
         
+        # Проверка на длину имени файла
+        if len(safe_filename) > 255:
+            logger.error(f"Попытка скачивания файла со слишком длинным именем: {len(safe_filename)} символов")
+            return "Недопустимое имя файла", 400
+            
         storage_path = get_temp_storage_path(link_id)
         file_path = os.path.join(storage_path, safe_filename)
         
@@ -937,13 +1259,59 @@ def download_file(link_id, filename):
             logger.error(f"Попытка скачивания файла вне хранилища: {filename}")
             return "Недопустимый путь к файлу", 403
             
-        if os.path.exists(file_path):
+        # Проверка существования файла
+        if not os.path.exists(file_path):
+            logger.warning(f"Попытка скачивания несуществующего файла: {filename}")
+            return "Файл не найден", 404
+            
+        # Проверка что это регулярный файл, а не директория или символическая ссылка
+        if not os.path.isfile(file_path):
+            logger.warning(f"Попытка скачивания не-файла: {filename}")
+            return "Недопустимый тип ресурса", 400
+            
+        # Проверка размера файла
+        try:
+            file_size = os.path.getsize(file_path)
+            if file_size > app.config['MAX_FILE_SIZE']:
+                logger.warning(f"Попытка скачивания слишком большого файла: {filename} ({file_size} байт)")
+                return "Файл слишком большой для скачивания", 400
+                
+            # Проверка нулевого размера файла
+            if file_size == 0:
+                logger.warning(f"Попытка скачивания пустого файла: {filename}")
+                # Разрешаем скачивание пустых файлов, но логируем это
+        except Exception as e:
+            logger.error(f"Ошибка при проверке размера файла {filename}: {str(e)}")
+            
+        # Устанавливаем правильные MIME-типы для безопасности
+        mime_type = 'application/octet-stream'
+        # Определяем некоторые безопасные MIME-типы для распространенных расширений
+        extensions_mime = {
+            'pdf': 'application/pdf',
+            'txt': 'text/plain',
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif',
+            'zip': 'application/zip'
+        }
+        
+        # Получаем расширение файла
+        if '.' in safe_filename:
+            ext = safe_filename.rsplit('.', 1)[1].lower()
+            mime_type = extensions_mime.get(ext, 'application/octet-stream')
+            
+        try:
             return send_file(
                 file_path,
+                mimetype=mime_type,
                 as_attachment=True,
                 download_name=safe_filename
             )
-        return "Файл не найден", 404
+        except Exception as e:
+            logger.error(f"Ошибка при отправке файла {filename}: {str(e)}")
+            return "Произошла ошибка при скачивании файла", 500
+            
     except Exception as e:
         logger.error(f"Ошибка при скачивании файла: {str(e)}")
         return "Произошла ошибка при скачивании файла", 500
@@ -958,6 +1326,11 @@ def download_multiple_files(link_id):
             logger.warning("Получен запрос с неверным Content-Type")
             return jsonify({'error': 'Ожидался JSON-запрос'}), 400
             
+        # Проверка на безопасность link_id (только буквенно-цифровые символы)
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка скачивания с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+            
         # Проверяем валидность хранилища
         if not is_temp_storage_valid(link_id):
             logger.error(f"Попытка скачивания из недействительного хранилища: {link_id}")
@@ -967,6 +1340,11 @@ def download_multiple_files(link_id):
         files = request.json.get('files', [])
         if not files:
             return jsonify({'error': 'Файлы не выбраны'}), 400
+            
+        # Проверка на максимальное количество файлов для скачивания (защита от DoS)
+        if len(files) > 1000:
+            logger.warning(f"Попытка скачать слишком много файлов: {len(files)}")
+            return jsonify({'error': 'Превышено максимальное количество файлов для скачивания'}), 400
 
         storage_path = get_temp_storage_path(link_id)
         real_storage_path = os.path.abspath(storage_path)
@@ -976,6 +1354,16 @@ def download_multiple_files(link_id):
         
         with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
             for filename in files:
+                # Проверка на тип данных
+                if not isinstance(filename, str):
+                    logger.warning(f"Некорректный тип данных в списке файлов: {type(filename)}")
+                    continue
+                    
+                # Ограничение длины имени файла
+                if len(filename) > 255:
+                    logger.warning(f"Слишком длинное имя файла: {len(filename)} символов")
+                    continue
+                
                 # Безопасное формирование пути к файлу
                 safe_filename = secure_filename(filename)
                 if not safe_filename:
@@ -990,20 +1378,45 @@ def download_multiple_files(link_id):
                     logger.warning(f"Попытка доступа к файлу вне хранилища: {filename}")
                     continue
                 
-                if os.path.exists(file_path) and os.path.isfile(file_path):
+                # Дополнительная проверка существования файла и его типа
+                if not os.path.exists(file_path) or not os.path.isfile(file_path):
+                    logger.warning(f"Файл не найден или не является обычным файлом: {filename}")
+                    continue
+                    
+                # Проверка на максимальный размер файла для архивации (защита от DoS)
+                file_size = os.path.getsize(file_path)
+                if file_size > 500 * 1024 * 1024:  # 500 MB
+                    logger.warning(f"Файл слишком большой для архивации: {filename} ({file_size} байт)")
+                    continue
+                
+                try:
                     # Добавляем файл в архив
                     zf.write(file_path, safe_filename)
-                else:
-                    logger.warning(f"Файл не найден: {filename}")
+                except Exception as e:
+                    logger.error(f"Ошибка при добавлении файла {filename} в архив: {str(e)}")
 
         # Перемещаем указатель в начало файла
         memory_file.seek(0)
+        
+        # Проверяем, были ли добавлены файлы в архив
+        if memory_file.getbuffer().nbytes == 0:
+            logger.warning("Не удалось создать архив - нет подходящих файлов")
+            return jsonify({'error': 'Не удалось создать архив'}), 400
+            
+        # Ограничиваем размер архива для предотвращения DoS
+        archive_size = memory_file.getbuffer().nbytes
+        if archive_size > 1024 * 1024 * 1024:  # 1 GB
+            logger.warning(f"Созданный архив слишком большой: {archive_size} байт")
+            return jsonify({'error': 'Архив слишком большой. Выберите меньше файлов.'}), 400
+        
+        # Безопасное имя для архива
+        safe_archive_name = f'files_{secure_filename(link_id)}.zip'
         
         return send_file(
             memory_file,
             mimetype='application/zip',
             as_attachment=True,
-            download_name=f'files_{link_id}.zip'
+            download_name=safe_archive_name
         )
 
     except Exception as e:
@@ -1057,70 +1470,113 @@ async def cleanup_expired_storages_async():
     try:
         logger.info("Начинаем проверку истекших хранилищ")
         
-        # Получим текущее локальное время в формате ISO
-        from datetime import datetime
-        
-        # Используем московское время (UTC+3) как основное
+        # Получим текущее московское время в формате ISO
         moscow_tz = pytz.timezone('Europe/Moscow')
         now = datetime.now(moscow_tz)
         current_time_iso = now.strftime('%Y-%m-%d %H:%M:%S')
         
         logger.info(f"Текущее время (Москва): {current_time_iso}")
         
-        async with aiosqlite.connect(DB_PATH) as conn:
-            # Получаем список всех хранилищ с их сроками действия для диагностики
-            cursor = await conn.execute('SELECT link_id, expires_at FROM temp_links')
-            all_storages = await cursor.fetchall()
-            
-            # Список истекших хранилищ
-            expired_storages = []
-            
-            for storage in all_storages:
-                link_id = storage[0]
-                expires_at = storage[1]
-                logger.info(f"Хранилище {link_id}, срок действия до: {expires_at}")
+        # Используем блокировку для предотвращения одновременной очистки из разных потоков
+        cleanup_lock_file = os.path.join(TEMP_STORAGE_DIR, ".cleanup_lock")
+        
+        # Проверяем, запущен ли уже процесс очистки
+        if os.path.exists(cleanup_lock_file):
+            try:
+                # Проверяем время создания файла блокировки
+                lock_time = os.path.getmtime(cleanup_lock_file)
+                current_time = time.time()
                 
-                # Форматируем дату истечения без микросекунд для корректного сравнения
-                expires_clean = expires_at
-                if '.' in expires_at:
-                    expires_clean = expires_at.split('.')[0]
-                
-                # Сравниваем даты в строковом формате без микросекунд
-                if expires_clean <= current_time_iso:
-                    expired_storages.append((link_id,))
-                    logger.info(f"Хранилище {link_id} истекло ({expires_clean} <= {current_time_iso})")
-            
-            logger.info(f"Найдено {len(expired_storages)} истекших хранилищ")
-            
-            # Удаляем файлы и записи из базы данных
-            for storage in expired_storages:
-                link_id = storage[0]
-                storage_path = get_temp_storage_path(link_id)
-                logger.info(f"Удаляем хранилище {link_id}")
-                
-                # Удаляем файлы хранилища
-                if os.path.exists(storage_path):
-                    try:
-                        shutil.rmtree(storage_path)
-                        logger.info(f"Удалены файлы хранилища: {link_id}")
-                    except Exception as e:
-                        logger.error(f"Ошибка при удалении файлов хранилища {link_id}: {str(e)}")
+                # Если блокировка старше 30 минут, считаем ее устаревшей и продолжаем
+                if current_time - lock_time > 1800:
+                    logger.warning("Обнаружена устаревшая блокировка очистки. Продолжаем процесс.")
+                    os.remove(cleanup_lock_file)
                 else:
-                    logger.info(f"Директория хранилища {link_id} не существует")
+                    logger.info("Процесс очистки хранилищ уже запущен. Пропускаем.")
+                    return
+            except Exception as e:
+                logger.error(f"Ошибка при проверке файла блокировки: {str(e)}")
+                return
+        
+        # Создаем файл блокировки
+        try:
+            with open(cleanup_lock_file, 'w') as f:
+                f.write(str(datetime.now()))
+        except Exception as e:
+            logger.error(f"Не удалось создать файл блокировки: {str(e)}")
+            return
+        
+        try:
+            async with aiosqlite.connect(DB_PATH) as conn:
+                # Включаем внешние ключи и WAL режим
+                await conn.execute("PRAGMA foreign_keys = ON")
+                await conn.execute("PRAGMA journal_mode = WAL")
                 
-                # Удаляем запись из базы данных
+                # Получаем все истекшие хранилища одним запросом
+                cursor = await conn.execute(
+                    'SELECT link_id FROM temp_links WHERE expires_at <= ?', 
+                    (current_time_iso,)
+                )
+                expired_storages = await cursor.fetchall()
+                
+                logger.info(f"Найдено {len(expired_storages)} истекших хранилищ")
+                
+                deleted_count = 0
+                
+                # Удаляем файлы и записи из базы данных
+                for storage in expired_storages:
+                    link_id = storage[0]
+                    storage_path = get_temp_storage_path(link_id)
+                    
+                    # Проверяем link_id на безопасность
+                    if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+                        logger.warning(f"Пропуск потенциально небезопасного link_id: {link_id}")
+                        continue
+                    
+                    logger.info(f"Удаляем хранилище {link_id}")
+                    
+                    # Удаляем файлы хранилища
+                    if os.path.exists(storage_path):
+                        try:
+                            shutil.rmtree(storage_path)
+                            logger.info(f"Удалены файлы хранилища: {link_id}")
+                        except Exception as e:
+                            logger.error(f"Ошибка при удалении файлов хранилища {link_id}: {str(e)}")
+                    else:
+                        logger.info(f"Директория хранилища {link_id} не существует")
+                    
+                    # Удаляем запись из базы данных в транзакции
+                    try:
+                        await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                        deleted_count += 1
+                        logger.info(f"Удалена запись о хранилище {link_id} из базы данных")
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении записи о хранилище {link_id}: {str(e)}")
+                
+                # Фиксируем изменения
+                await conn.commit()
+                logger.info(f"Очищено {deleted_count} истекших хранилищ из {len(expired_storages)}")
+                
+                # Проводим VACUUM для освобождения места в базе данных
                 try:
-                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-                    logger.info(f"Удалена запись о хранилище {link_id} из базы данных")
+                    await conn.execute("VACUUM")
+                    logger.info("Выполнена оптимизация базы данных (VACUUM)")
                 except Exception as e:
-                    logger.error(f"Ошибка при удалении записи о хранилище {link_id}: {str(e)}")
-            
-            await conn.commit()
-            logger.info(f"Очищено {len(expired_storages)} истекших хранилищ")
-            
+                    logger.error(f"Ошибка при оптимизации базы данных: {str(e)}")
+        except Exception as e:
+            logger.error(f"Ошибка при очистке хранилищ: {str(e)}")
+            # Для отладки выводим полный стек ошибки
+            import traceback
+            logger.error(traceback.format_exc())
+        finally:
+            # Удаляем файл блокировки в любом случае
+            try:
+                if os.path.exists(cleanup_lock_file):
+                    os.remove(cleanup_lock_file)
+            except Exception as e:
+                logger.error(f"Ошибка при удалении файла блокировки: {str(e)}")
     except Exception as e:
-        logger.error(f"Ошибка при очистке хранилищ: {str(e)}")
-        # Для отладки выводим полный стек ошибки
+        logger.error(f"Критическая ошибка в процессе очистки: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
 
@@ -1138,12 +1594,45 @@ def periodic_cleanup():
             # Очистка устаревших сессий загрузки
             cleanup_upload_sessions()
             
+            # Очистка старых записей логов
+            cleanup_old_logs()
+            
             # Проверяем каждую минуту
             time.sleep(60)
         except Exception as e:
             logger.error(f"Ошибка в периодической очистке: {str(e)}")
             # В случае ошибки ждем 30 секунд перед следующей попыткой
             time.sleep(30)
+
+# Очистка старых записей логов
+def cleanup_old_logs():
+    """Очистка старых записей журнала доступа"""
+    logger.info("Запуск очистки старых записей журнала доступа")
+    
+    async def _cleanup_logs_async():
+        try:
+            # Оставляем записи только за последние 30 дней
+            days_to_keep = 30
+            cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            async with aiosqlite.connect(DB_PATH) as conn:
+                # Получаем количество записей для удаления
+                cursor = await conn.execute('SELECT COUNT(*) FROM access_log WHERE timestamp < ?', (cutoff_date,))
+                result = await cursor.fetchone()
+                count_to_delete = result[0] if result else 0
+                
+                if count_to_delete > 0:
+                    # Удаляем старые записи
+                    await conn.execute('DELETE FROM access_log WHERE timestamp < ?', (cutoff_date,))
+                    await conn.commit()
+                    logger.info(f"Удалено {count_to_delete} старых записей из журнала доступа")
+                else:
+                    logger.info("Нет устаревших записей для удаления из журнала доступа")
+        except Exception as e:
+            logger.error(f"Ошибка при очистке старых записей логов: {str(e)}")
+    
+    # Используем декоратор run_async напрямую на вызов функции
+    run_async(_cleanup_logs_async)()
 
 # Периодическая очистка истекших сессий загрузки
 def cleanup_upload_sessions():
@@ -1164,6 +1653,31 @@ def cleanup_upload_sessions():
         logger.info(f"Очищено {len(expired_sessions)} устаревших сессий загрузки")
     except Exception as e:
         logger.error(f"Ошибка при очистке сессий загрузки: {str(e)}")
+
+# Обработчик ошибки 404 (не найдено)
+@app.errorhandler(404)
+def page_not_found(e):
+    """Обработчик ошибки 404"""
+    return "Запрашиваемая страница не найдена", 404
+
+# Обработчик ошибки 500 (внутренняя ошибка сервера)
+@app.errorhandler(500)
+def internal_server_error(e):
+    """Обработчик ошибки 500"""
+    logger.error(f"Внутренняя ошибка сервера: {str(e)}")
+    return "Произошла внутренняя ошибка сервера", 500
+
+# Обработчик ошибки 405 (метод не разрешен)
+@app.errorhandler(405)
+def method_not_allowed(e):
+    """Обработчик ошибки 405"""
+    return "Метод не разрешен", 405
+
+# Обработчик ошибки 403 (доступ запрещен)
+@app.errorhandler(403)
+def forbidden(e):
+    """Обработчик ошибки 403"""
+    return "Доступ запрещен", 403
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных

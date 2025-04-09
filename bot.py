@@ -2529,10 +2529,19 @@ if __name__ == '__main__':
         def signal_handler(signum, frame):
             """Обработка сигналов остановки"""
             print(f"Получен сигнал {signum}, останавливаем бота...")
-            # Используем новую задачу для остановки приложения
+            # Сначала остановим обновления (polling)
             loop = asyncio.get_event_loop()
-            loop.create_task(app.stop())
-            loop.create_task(app.shutdown())
+            
+            # Создаем функцию для корректной остановки
+            async def shutdown_properly():
+                # Сначала останавливаем updater, затем application
+                await app.updater.stop()
+                await app.stop()
+                # Остановка цикла событий
+                loop.stop()
+            
+            # Запускаем корректное завершение работы
+            loop.create_task(shutdown_properly())
             
         # Регистрируем обработчики сигналов
         import signal
