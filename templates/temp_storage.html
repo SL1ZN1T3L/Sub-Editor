@@ -218,6 +218,19 @@
         .delete-selected:hover {
             background-color: #c82333;
         }
+        .download-selected {
+            margin-bottom: 10px;
+            padding: 5px 15px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            display: none;
+        }
+        .download-selected:hover {
+            background-color: #218838;
+        }
         .file-checkbox {
             width: 18px;
             height: 18px;
@@ -500,7 +513,7 @@
                         <input type="checkbox" id="select-all" class="file-checkbox">
                         <label for="select-all">Выбрать все</label>
                         <button id="delete-selected" class="delete-selected">Удалить выбранные</button>
-                        <button id="download-selected" class="btn btn-success" style="margin-left: 10px;">
+                        <button id="download-selected" class="download-selected">
                             <i class="fas fa-download"></i> Скачать выбранные
                         </button>
                     </div>
@@ -994,7 +1007,8 @@
                 const response = await fetch(`/space/${linkId}/download-multiple`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken
                     },
                     body: JSON.stringify({ files: selectedFiles })
                 });
@@ -1011,11 +1025,11 @@
                     window.URL.revokeObjectURL(url);
                 } else {
                     const error = await response.json();
-                    alert(error.error || 'Ошибка при скачивании файлов');
+                    showToast(error.error || 'Ошибка при скачивании файлов', 'error');
                 }
             } catch (error) {
                 console.error('Ошибка:', error);
-                alert('Произошла ошибка при скачивании файлов');
+                showToast('Произошла ошибка при скачивании файлов', 'error');
             }
         });
 
@@ -1024,7 +1038,7 @@
                 .map(checkbox => checkbox.getAttribute('data-filename'));
             
             if (selectedFiles.length === 0) {
-                alert('Выберите файлы для удаления');
+                showToast('Выберите файлы для удаления', 'error');
                 return;
             }
 
@@ -1035,15 +1049,20 @@
             for (const filename of selectedFiles) {
                 try {
                     const response = await fetch(`/space/${linkId}/delete/${filename}`, {
-                        method: 'POST'
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-Token': csrfToken
+                        }
                     });
                     
                     if (!response.ok) {
                         const error = await response.json();
                         console.error(`Ошибка при удалении файла ${filename}:`, error);
+                        showToast(`Ошибка при удалении файла ${filename}: ${error.error || 'неизвестная ошибка'}`, 'error');
                     }
                 } catch (error) {
                     console.error(`Ошибка при удалении файла ${filename}:`, error);
+                    showToast(`Ошибка при удалении файла ${filename}`, 'error');
                 }
             }
 
