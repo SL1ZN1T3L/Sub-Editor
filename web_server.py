@@ -108,7 +108,7 @@ def get_temp_storage_size(link_id):
         for f in filenames:
             fp = os.path.join(dirpath, f)
             total_size += os.path.getsize(fp)
-    return total_size
+    return max(0, total_size)  # Гарантируем положительное значение
 
 def check_temp_storage_limit(link_id):
     """Проверка лимита временного хранилища (500 MB)"""
@@ -268,21 +268,30 @@ def temp_storage(link_id):
         
         files = []
         total_size = 0
-        for filename in os.listdir(storage_path):
-            file_path = os.path.join(storage_path, filename)
-            if os.path.isfile(file_path):
-                file_size = os.path.getsize(file_path)
-                total_size += file_size
-                files.append({
-                    'name': filename,
-                    'size': file_size,
-                    'modified': datetime.fromtimestamp(os.path.getmtime(file_path))
-                })
+        
+        try:
+            for filename in os.listdir(storage_path):
+                file_path = os.path.join(storage_path, filename)
+                if os.path.isfile(file_path):
+                    try:
+                        file_size = max(0, os.path.getsize(file_path))
+                        total_size += file_size
+                        files.append({
+                            'name': filename,
+                            'size': file_size,
+                            'modified': datetime.fromtimestamp(os.path.getmtime(file_path))
+                        })
+                    except (OSError, IOError) as e:
+                        logger.error(f"Ошибка при получении информации о файле {filename}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Ошибка при чтении содержимого директории {storage_path}: {str(e)}")
         
         files.sort(key=lambda x: x['modified'], reverse=True)
         
-        used_space = total_size / (1024 * 1024)
-        used_percent = (total_size / app.config['MAX_STORAGE_SIZE']) * 100
+        # Обеспечиваем безопасные значения
+        total_size = max(0, total_size)
+        used_space = total_size / (1024 * 1024)  # переводим в MB
+        used_percent = min(100, max(0, (total_size / app.config['MAX_STORAGE_SIZE']) * 100))
         
         return render_template('temp_storage.html',
                              link_id=link_id,
@@ -317,25 +326,49 @@ def upload_file(link_id):
             return jsonify({'error': 'Файл не выбран'}), 400
 
         # Получаем информацию о чанках
-        chunk_number = int(request.form.get('chunk', '0'))
-        total_chunks = int(request.form.get('chunks', '1'))
-        total_size = int(request.form.get('total_size', '0'))
+        try:
+            chunk_number = max(0, int(request.form.get('chunk', '0')))
+            total_chunks = max(1, int(request.form.get('chunks', '1')))
+            total_size = max(0, int(request.form.get('total_size', '0')))
+        except (ValueError, TypeError) as e:
+            logger.error(f"Некорректные параметры загрузки: {str(e)}")
+            return jsonify({'error': 'Некорректные параметры загрузки'}), 400
 
         # Проверяем размер файла
         file.seek(0, 2)  # Перемещаемся в конец файла
         chunk_size = file.tell()  # Получаем размер чанка
         file.seek(0)  # Возвращаемся в начало
         
+        if chunk_size <= 0:
+            logger.error(f"Попытка загрузки файла с некорректным размером чанка: {chunk_size}")
+            return jsonify({'error': 'Некорректный размер чанка'}), 400
+        
+        if total_size <= 0 or total_size > app.config['MAX_STORAGE_SIZE']:
+            logger.error(f"Некорректный общий размер файла: {total_size}")
+            return jsonify({'error': 'Некорректный размер файла'}), 400
+        
         storage_path = get_temp_storage_path(link_id)
         current_size = get_temp_storage_size(link_id)
         
         # Проверяем размер только для первого чанка
         if chunk_number == 0:
-            if current_size + total_size > app.config['MAX_STORAGE_SIZE']:
-                logger.error(f"Превышен лимит хранилища. Текущий размер: {current_size}, размер файла: {total_size}")
+            remaining_size = max(0, app.config['MAX_STORAGE_SIZE'] - current_size)
+            if total_size > remaining_size:
+                logger.error(f"Превышен лимит хранилища. Текущий размер: {current_size}, размер файла: {total_size}, доступно: {remaining_size}")
                 return jsonify({
                     'error': f'Превышен лимит хранилища (500 MB). Использовано: {current_size / (1024*1024):.2f} MB'
                 }), 400
+
+        # Дополнительная проверка валидности пути хранилища
+        try:
+            storage_path = os.path.abspath(storage_path)
+            expected_base_path = os.path.abspath(TEMP_STORAGE_DIR)
+            if not storage_path.startswith(expected_base_path):
+                logger.error(f"Попытка доступа к недопустимой директории: {storage_path}")
+                return jsonify({'error': 'Недопустимый путь хранилища'}), 403
+        except Exception as e:
+            logger.error(f"Ошибка при проверке пути хранилища: {str(e)}")
+            return jsonify({'error': 'Ошибка при проверке пути хранилища'}), 500
 
         try:
             # Создаем директорию если её нет
@@ -410,8 +443,23 @@ def delete_file(link_id, filename):
         if not is_temp_storage_valid(link_id):
             logger.error(f"Попытка удаления файла из недействительного хранилища: {link_id}")
             return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
-            
-        file_path = os.path.join(get_temp_storage_path(link_id), secure_filename(filename))
+        
+        # Безопасное формирование пути к файлу
+        safe_filename = secure_filename(filename)
+        if not safe_filename:
+            logger.error(f"Попытка доступа к файлу с пустым или небезопасным именем: {filename}")
+            return jsonify({'error': 'Недопустимое имя файла'}), 400
+        
+        storage_path = get_temp_storage_path(link_id)
+        file_path = os.path.join(storage_path, safe_filename)
+        
+        # Проверка безопасности пути
+        real_file_path = os.path.abspath(file_path)
+        real_storage_path = os.path.abspath(storage_path)
+        if not real_file_path.startswith(real_storage_path):
+            logger.error(f"Попытка доступа к файлу вне хранилища: {filename}")
+            return jsonify({'error': 'Недопустимый путь к файлу'}), 403
+        
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -462,13 +510,28 @@ def download_file(link_id, filename):
     try:
         if not is_temp_storage_valid(link_id):
             return "Временное хранилище не найдено или срок его действия истек", 404
+        
+        # Безопасное формирование пути к файлу
+        safe_filename = secure_filename(filename)
+        if not safe_filename:
+            logger.error(f"Попытка скачивания файла с пустым или небезопасным именем: {filename}")
+            return "Недопустимое имя файла", 400
+        
+        storage_path = get_temp_storage_path(link_id)
+        file_path = os.path.join(storage_path, safe_filename)
+        
+        # Проверка безопасности пути
+        real_file_path = os.path.abspath(file_path)
+        real_storage_path = os.path.abspath(storage_path)
+        if not real_file_path.startswith(real_storage_path):
+            logger.error(f"Попытка скачивания файла вне хранилища: {filename}")
+            return "Недопустимый путь к файлу", 403
             
-        file_path = os.path.join(get_temp_storage_path(link_id), secure_filename(filename))
         if os.path.exists(file_path):
             return send_file(
                 file_path,
                 as_attachment=True,
-                download_name=filename
+                download_name=safe_filename
             )
         return "Файл не найден", 404
     except Exception as e:
@@ -490,16 +553,30 @@ def download_multiple_files(link_id):
             return jsonify({'error': 'Файлы не выбраны'}), 400
 
         storage_path = get_temp_storage_path(link_id)
+        real_storage_path = os.path.abspath(storage_path)
         
         # Создаем объект в памяти для архива
         memory_file = BytesIO()
         
         with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
             for filename in files:
-                file_path = os.path.join(storage_path, secure_filename(filename))
+                # Безопасное формирование пути к файлу
+                safe_filename = secure_filename(filename)
+                if not safe_filename:
+                    logger.warning(f"Пропуск файла с небезопасным именем: {filename}")
+                    continue
+                
+                file_path = os.path.join(storage_path, safe_filename)
+                real_file_path = os.path.abspath(file_path)
+                
+                # Проверка безопасности пути
+                if not real_file_path.startswith(real_storage_path):
+                    logger.warning(f"Попытка доступа к файлу вне хранилища: {filename}")
+                    continue
+                
                 if os.path.exists(file_path) and os.path.isfile(file_path):
                     # Добавляем файл в архив
-                    zf.write(file_path, filename)
+                    zf.write(file_path, safe_filename)
                 else:
                     logger.warning(f"Файл не найден: {filename}")
 

@@ -629,8 +629,14 @@
                 }
                 
                 // Проверяем, не превысит ли текущий файл лимит хранилища
-                const usedSpace = parseFloat('{{ used_space }}');
-                const remaining = 500 - usedSpace; // 500 MB - текущее использование
+                const usedSpace = Math.max(0, parseFloat('{{ used_space }}'));
+                const remaining = Math.max(0, 500 - usedSpace); // 500 MB - текущее использование
+                
+                // Гарантируем, что значения корректны
+                if (isNaN(remaining) || !isFinite(remaining)) {
+                    updateFileStatus(index, 'error', `Ошибка при проверке свободного места`);
+                    return;
+                }
                 
                 if (totalSize / (1024 * 1024) > remaining) {
                     updateFileStatus(index, 'error', `Файл превысит лимит хранилища. Осталось: ${remaining.toFixed(2)} MB`);
