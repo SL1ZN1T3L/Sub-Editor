@@ -75,15 +75,10 @@ app.config['MAX_FILES_PER_STORAGE'] = MAX_FILES_PER_STORAGE
 # Директория для временного хранилища
 app.config['UPLOAD_FOLDER'] = os.getenv('UPLOAD_FOLDER', 'temp_storage')
 
-# Разрешенные типы файлов (расширения)
+# Разрешенные типы файлов (расширения, белый список)
 DEFAULT_ALLOWED_EXTENSIONS = 'txt,pdf,png,jpg,jpeg,gif,doc,docx,xls,xlsx,ppt,pptx,zip,rar,7z,mp3,mp4,avi,mov,mkv'
 ALLOWED_EXTENSIONS_STRING = os.getenv('ALLOWED_EXTENSIONS', DEFAULT_ALLOWED_EXTENSIONS)
 app.config['ALLOWED_EXTENSIONS'] = set(ALLOWED_EXTENSIONS_STRING.lower().split(','))
-
-# Запрещенные типы файлов (дополнительная безопасность)
-DEFAULT_BLOCKED_EXTENSIONS = 'php,exe,sh,bat,cmd,js,vbs,ps1,py,rb,pl'
-BLOCKED_EXTENSIONS_STRING = os.getenv('BLOCKED_EXTENSIONS', DEFAULT_BLOCKED_EXTENSIONS)
-app.config['BLOCKED_EXTENSIONS'] = set(BLOCKED_EXTENSIONS_STRING.lower().split(','))
 
 # Настройка секретного ключа для сессий и CSRF защиты
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', secrets.token_hex(32))
@@ -304,7 +299,6 @@ logger.info(f"MAX_STORAGE_SIZE_MB: {MAX_STORAGE_SIZE_MB} MB")
 logger.info(f"MAX_FILE_SIZE_MB: {MAX_FILE_SIZE_MB} MB")
 logger.info(f"MAX_FILES_PER_STORAGE: {MAX_FILES_PER_STORAGE} (0 = не ограничено)")
 logger.info(f"ALLOWED_EXTENSIONS: {ALLOWED_EXTENSIONS_STRING}")
-logger.info(f"BLOCKED_EXTENSIONS: {BLOCKED_EXTENSIONS_STRING}")
 logger.info(f"STORAGE_EXPIRATION_DAYS: {STORAGE_EXPIRATION_DAYS}")
 logger.info(f"CSRF_PROTECTION_ENABLED: {CSRF_PROTECTION_ENABLED}")
 
@@ -567,28 +561,13 @@ def set_user_theme(user_id, theme):
 
 # Функция для проверки валидности расширения файла
 def allowed_file(filename):
-    """Проверяет, что загружаемый файл имеет разрешенное расширение"""
+    """Проверяет, что загружаемый файл имеет разрешенное расширение из белого списка"""
     # Проверяем на валидность имени файла
     if not filename or '.' not in filename:
         return False
         
     # Нормализуем имя файла
     filename = filename.lower()
-    
-    # Получаем расширение, защищаясь от двойных расширений (например, file.php.jpg)
-    extensions = filename.split('.')
-    if len(extensions) > 2:
-        # Проверяем все расширения кроме первого
-        for ext in extensions[1:]:
-            if ext in app.config['BLOCKED_EXTENSIONS']:
-                return False
-    
-    # Проверяем основное расширение
-    extension = extensions[-1]
-    
-    # Сначала проверяем запрещенные расширения (приоритет)
-    if extension in app.config['BLOCKED_EXTENSIONS']:
-        return False
     
     # Проверяем на потенциально опасные последовательности символов в имени
     dangerous_patterns = [
@@ -607,10 +586,18 @@ def allowed_file(filename):
     if len(filename) > 255:
         return False
     
-    # Если список разрешенных расширений пуст, разрешаем все (кроме заблокированных)
+    # Получаем все расширения файла (защита от двойных расширений)
+    extensions = filename.split('.')
+    
+    # Проверяем основное расширение
+    extension = extensions[-1]
+    
+    # Проверяем по белому списку (если он есть)
     if not app.config['ALLOWED_EXTENSIONS']:
-        return True
+        # Если белый список пуст - все файлы запрещены
+        return False
         
+    # Разрешены только файлы с расширениями из белого списка
     return extension in app.config['ALLOWED_EXTENSIONS']
 
 # CSRF защита
@@ -842,16 +829,17 @@ def temp_storage(link_id):
         used_space = total_size / (1024 * 1024)  # переводим в MB
         used_percent = min(100, max(0, (total_size / app.config['MAX_STORAGE_SIZE']) * 100))
         
+        # Рендерим шаблон с данными о хранилище
         try:
             return render_template('temp_storage.html',
                                 link_id=link_id,
                                 files=files,
-                                total_size=total_size,
                                 used_space=used_space,
                                 used_percent=used_percent,
                                 theme=theme,
                                 expires_at=expires_at,
-                                remaining_time=remaining_time)
+                                remaining_time=remaining_time,
+                                allowed_extensions=ALLOWED_EXTENSIONS_STRING.split(','))
         except Exception as e:
             logger.error(f"Ошибка при рендеринге шаблона: {str(e)}")
             return "Произошла ошибка при загрузке страницы. Пожалуйста, попробуйте позже.", 500
@@ -1710,4 +1698,4 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, threaded=True)
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске сервера: {str(e)}")
-        raise 
+        raise

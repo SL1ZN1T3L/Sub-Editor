@@ -531,6 +531,7 @@
                         <i class="fas fa-cloud-upload-alt fa-3x mb-3"></i>
                         <p>Перетащите файлы сюда или нажмите для выбора</p>
                         <p class="text-muted small">Максимальный размер файла: 500 МБ</p>
+                        <p class="text-muted small">Разрешенные типы файлов: {{ ', '.join(allowed_extensions) }}</p>
                         <form id="uploadForm" enctype="multipart/form-data">
                             <input type="file" class="file-input" id="fileInput" multiple>
                             <button type="button" class="btn btn-primary mt-3" id="selectFilesBtn">Выбрать файлы</button>
@@ -742,21 +743,6 @@
         
         async function uploadFile(file, index) {
             try {
-                // Проверяем расширение файла перед загрузкой
-                const fileExtension = file.name.split('.').pop().toLowerCase();
-                const restrictedExtensions = ['php', 'exe', 'sh', 'bat', 'cmd', 'js', 'vbs', 'ps1', 'py', 'rb', 'pl'];
-                
-                if (restrictedExtensions.includes(fileExtension)) {
-                    const errorMessage = `Файл с расширением .${fileExtension} запрещен для загрузки`;
-                    updateFileStatus(index, 'error', errorMessage);
-                    
-                    // Обновляем текст под основным прогресс-баром
-                    const mainProgressText = document.querySelector('.upload-progress .progress-text');
-                    mainProgressText.innerHTML = `<span class="text-danger">Ошибка: ${errorMessage} (${file.name})</span>`;
-                    
-                    return;
-                }
-                
                 let currentChunkSize = 1024 * 1024; // 1MB chunks
                 const totalSize = file.size;
                 let uploadedSize = 0;
@@ -874,6 +860,16 @@
                                     uploadControllers.delete(index);
                                     showToast('Превышен лимит хранилища. Загрузка отменена.', 'error');
                                     return; // Выходим из функции, прекращая загрузку
+                                }
+                                
+                                // Обработка ошибки неразрешенного типа файла
+                                if (response.status === 400 && errorData.error && 
+                                    errorData.error.includes('Тип файла не разрешен')) {
+                                    const errorMessage = `Тип файла не разрешен для загрузки (разрешены только: ${document.querySelector('.drop-area .text-muted:nth-of-type(3)').textContent.split(': ')[1]})`;
+                                    updateFileStatus(index, 'error', errorMessage);
+                                    uploadControllers.delete(index);
+                                    showToast(errorMessage, 'error');
+                                    return;
                                 }
                                 
                                 throw new Error(errorData.error || 'Неизвестная ошибка');
