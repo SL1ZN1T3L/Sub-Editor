@@ -433,6 +433,50 @@
             animation: rainbow-animation 5s linear infinite;
             z-index: 1;
         }
+        
+        .drop-area {
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            transition: all 0.3s ease;
+            background-color: var(--bg-color);
+            position: relative;
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .drop-area.highlight {
+            border-color: #4caf50;
+            background-color: rgba(76, 175, 80, 0.1);
+        }
+        
+        .drop-area-content {
+            width: 100%;
+        }
+        
+        .drop-area i {
+            color: var(--text-color);
+            opacity: 0.7;
+        }
+        
+        .drop-area p {
+            margin: 10px 0;
+            color: var(--text-color);
+        }
+        
+        .file-input {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            width: 100%;
+            opacity: 0;
+            cursor: pointer;
+            z-index: -1;
+        }
     </style>
 </head>
 <body>
@@ -482,26 +526,31 @@
         <div class="card mb-4">
             <div class="card-body">
                 <h5 class="card-title">Загрузка файлов</h5>
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <input type="file" class="form-control" id="fileInput" multiple>
+                <div id="dropArea" class="drop-area mb-3">
+                    <div class="drop-area-content">
+                        <i class="fas fa-cloud-upload-alt fa-3x mb-3"></i>
+                        <p>Перетащите файлы сюда или нажмите для выбора</p>
+                        <p class="text-muted small">Максимальный размер файла: 500 МБ</p>
+                        <form id="uploadForm" enctype="multipart/form-data">
+                            <input type="file" class="file-input" id="fileInput" multiple>
+                            <button type="button" class="btn btn-primary mt-3" id="selectFilesBtn">Выбрать файлы</button>
+                        </form>
                     </div>
-                    <button type="submit" class="btn btn-primary">Загрузить</button>
-                    <div class="upload-progress">
-                        <div class="progress mt-2">
-                            <div class="progress-bar" role="progressbar" style="width: 0%"></div>
-                        </div>
-                        <div class="progress-text"></div>
-                        <div class="mt-3">
-                            <button type="button" class="btn btn-sm btn-outline-primary" id="toggleFilesList">
-                                Показать список файлов <i class="fas fa-chevron-down"></i>
-                            </button>
-                        </div>
-                        <div class="files-upload-list mt-2" style="display: none;">
-                            <!-- Здесь будет отображаться список загружаемых файлов -->
-                        </div>
+                </div>
+                <div class="upload-progress">
+                    <div class="progress mt-2">
+                        <div class="progress-bar" role="progressbar" style="width: 0%"></div>
                     </div>
-                </form>
+                    <div class="progress-text"></div>
+                    <div class="mt-3">
+                        <button type="button" class="btn btn-sm btn-outline-primary" id="toggleFilesList">
+                            Показать список файлов <i class="fas fa-chevron-down"></i>
+                        </button>
+                    </div>
+                    <div class="files-upload-list mt-2" style="display: none;">
+                        <!-- Здесь будет отображаться список загружаемых файлов -->
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -564,15 +613,69 @@
         let currentUploadedSize = 0;
         let uploadControllers = new Map(); // Map для хранения AbortController для каждого файла
         
-        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        // Настройка Drag and Drop
+        const dropArea = document.getElementById('dropArea');
+        const fileInput = document.getElementById('fileInput');
+        const selectFilesBtn = document.getElementById('selectFilesBtn');
+        
+        // Предотвращаем стандартное поведение браузера (открытие файла)
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
             e.preventDefault();
-            const files = document.getElementById('fileInput').files;
+            e.stopPropagation();
+        }
+        
+        // Подсветка области при перетаскивании файлов
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropArea.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropArea.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight() {
+            dropArea.classList.add('highlight');
+        }
+        
+        function unhighlight() {
+            dropArea.classList.remove('highlight');
+        }
+        
+        // Обработка сброшенных файлов
+        dropArea.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
             
+            if (files.length > 0) {
+                fileInput.files = files;
+                handleFiles(files);
+            }
+        }
+        
+        // Обработка выбора файлов через кнопку
+        selectFilesBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+        
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                handleFiles(fileInput.files);
+            }
+        });
+        
+        // Функция обработки файлов
+        function handleFiles(files) {
             if (files.length === 0) {
-                alert('Пожалуйста, выберите файлы для загрузки');
+                showToast('Пожалуйста, выберите файлы для загрузки', 'error');
                 return;
             }
-
+            
             const uploadProgress = document.querySelector('.upload-progress');
             const progressBar = uploadProgress.querySelector('.progress-bar');
             const filesList = document.querySelector('.files-upload-list');
@@ -617,20 +720,24 @@
                 });
             });
             
-            // Добавляем обработчик для кнопки показать/скрыть список
-            document.getElementById('toggleFilesList').addEventListener('click', function() {
-                const filesList = document.querySelector('.files-upload-list');
-                const isVisible = filesList.style.display !== 'none';
-                filesList.style.display = isVisible ? 'none' : 'block';
-                this.innerHTML = isVisible ? 
-                    'Показать список файлов <i class="fas fa-chevron-down"></i>' : 
-                    'Скрыть список файлов <i class="fas fa-chevron-up"></i>';
-            });
-
+            // Показываем список файлов
+            filesList.style.display = 'block';
+            document.getElementById('toggleFilesList').innerHTML = 'Скрыть список файлов <i class="fas fa-chevron-up"></i>';
+            
             // Запускаем загрузку файлов
-            for (let i = 0; i < files.length; i++) {
-                uploadFile(files[i], i);
-            }
+            Array.from(files).forEach((file, index) => {
+                uploadFile(file, index);
+            });
+        }
+        
+        // Доработанная функция для toggle списка файлов
+        document.getElementById('toggleFilesList').addEventListener('click', function() {
+            const filesList = document.querySelector('.files-upload-list');
+            const isVisible = filesList.style.display !== 'none';
+            filesList.style.display = isVisible ? 'none' : 'block';
+            this.innerHTML = isVisible ? 
+                'Показать список файлов <i class="fas fa-chevron-down"></i>' : 
+                'Скрыть список файлов <i class="fas fa-chevron-up"></i>';
         });
         
         async function uploadFile(file, index) {
