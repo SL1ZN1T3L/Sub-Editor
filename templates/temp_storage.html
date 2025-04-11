@@ -1106,7 +1106,8 @@
                 const response = await fetch(`/space/${linkId}/set-theme`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken
                     },
                     body: JSON.stringify({ theme: newTheme })
                 });
