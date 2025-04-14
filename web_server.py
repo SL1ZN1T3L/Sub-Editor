@@ -350,12 +350,13 @@ async def init_db_async():
                         link_id TEXT PRIMARY KEY,
                         expires_at TEXT NOT NULL,
                         user_id INTEGER,
-                        created_at TEXT
+                        created_at TEXT,
+                        extension_count INTEGER DEFAULT 0
                     )
                 ''')
                 logger.info("Создана таблица temp_links")
             
-            # Если таблица существует, проверяем наличие колонки created_at
+            # Если таблица существует, проверяем наличие нужных колонок
             else:
                 cursor = await conn.execute("PRAGMA table_info(temp_links)")
                 columns_raw = await cursor.fetchall()
@@ -394,6 +395,15 @@ async def init_db_async():
                         logger.info("Добавлена колонка created_at в таблицу temp_links")
                     except Exception as e:
                         logger.error(f"Ошибка при добавлении колонки created_at: {str(e)}")
+                
+                # Если колонки extension_count нет, добавляем её
+                if 'extension_count' not in columns:
+                    try:
+                        # Добавляем колонку extension_count
+                        await conn.execute('ALTER TABLE temp_links ADD COLUMN extension_count INTEGER DEFAULT 0')
+                        logger.info("Добавлена колонка extension_count в таблицу temp_links")
+                    except Exception as e:
+                        logger.error(f"Ошибка при добавлении колонки extension_count: {str(e)}")
             
             # Добавляем индекс для ускорения поиска по expires_at
             try:

@@ -192,7 +192,14 @@ async def setup_database():
                   user_id INTEGER,
                   expires_at TIMESTAMP,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  extension_count INTEGER DEFAULT 0,
                   FOREIGN KEY (user_id) REFERENCES users(user_id))''')
+        
+        # Проверка наличия поля extension_count и его добавление, если отсутствует
+        cursor = await conn.execute("PRAGMA table_info(temp_links)")
+        columns = [column[1] for column in await cursor.fetchall()]
+        if 'extension_count' not in columns:
+            await conn.execute("ALTER TABLE temp_links ADD COLUMN extension_count INTEGER DEFAULT 0")
         
         # Создание таблицы temp_link_files
         await conn.execute('''CREATE TABLE IF NOT EXISTS temp_link_files
@@ -1234,8 +1241,8 @@ async def save_temp_link(file_path, original_name, duration_hours, user_id):
             try:
                 # Создаем запись о временной ссылке
                 await conn.execute('''
-                    INSERT INTO temp_links (link_id, expires_at, user_id)
-                    VALUES (?, ?, ?)
+                    INSERT INTO temp_links (link_id, expires_at, user_id, extension_count)
+                    VALUES (?, ?, ?, 0)
                 ''', (link_id, expires_at, user_id))
                 
                 # Добавляем информацию о файле
@@ -1485,8 +1492,8 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         # Создаем запись о временном хранилище
         async with aiosqlite.connect(DB_PATH) as conn:
             await conn.execute('''
-                INSERT INTO temp_links (link_id, expires_at, user_id, created_at)
-                VALUES (?, ?, ?, datetime('now'))
+                INSERT INTO temp_links (link_id, expires_at, user_id, created_at, extension_count)
+                VALUES (?, ?, ?, datetime('now'), 0)
             ''', (link_id, expires_at, update.effective_user.id))
             
             await conn.commit()
@@ -1549,7 +1556,8 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
             # Получаем информацию о хранилище
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
+            c.execute('SELECT expires_at, extension_count FROM temp_links WHERE link_id = ? AND user_id = ?', 
+                     (link_id, update.effective_user.id))
             result = c.fetchone()
             
             if not result:
@@ -1560,23 +1568,73 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
                 conn.close()
                 return MENU
                 
-            expires_at = result[0]
-            conn.close()
+            expires_at, extension_count = result
+            extension_count = extension_count or 0  # Если None, то считаем как 0
+            
+            # Проверяем, достигнут ли лимит продлений
+            max_extensions = 1  # Максимально допустимое количество продлений
+            if extension_count >= max_extensions:
+                await update.message.reply_text(
+                    f"Достигнут лимит продлений хранилища (максимум {max_extensions}). Создайте новое хранилище.", 
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+                conn.close()
+                return MENU
+                
+            # Разбираем дату
+            current_expires_at = datetime.strptime(format_datetime(expires_at), '%Y-%m-%d %H:%M:%S')
+            
+            # Проверяем, не истек ли срок хранилища
+            if current_expires_at <= datetime.now():
+                await update.message.reply_text(
+                    "Срок действия хранилища уже истек. Создайте новое хранилище.", 
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+                conn.close()
+                return MENU
+                
+            # Рассчитываем новый срок действия
+            duration_hours = duration_map[update.message.text]
+            new_expires_at = current_expires_at + timedelta(hours=duration_hours)
+            
+            # Обновляем срок действия и счетчик продлений в базе данных
+            c.execute('UPDATE temp_links SET expires_at = ?, extension_count = extension_count + 1 WHERE link_id = ?', 
+                     (new_expires_at, link_id))
+            conn.commit()
+            
+            # Форматируем текст о сроке продления
+            duration_text = ""
+            if duration_hours < 24:
+                duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+            elif duration_hours < 48:
+                duration_text = "1 день"
+            else:
+                days = duration_hours // 24
+                duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
+            
+            # Создаем клавиатуру для управления хранилищем
+            keyboard = [
+                [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                [KeyboardButton("Назад")]
+            ]
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
             storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
             
             await update.message.reply_text(
-                f"Управление хранилищем:\n\n"
+                f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
+                f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}\n"
+                f"🔄 Осталось продлений: {max_extensions - (extension_count + 1)}\n\n"
                 f"Выберите действие:",
                 reply_markup=markup
             )
             
+            # Обновляем данные пользователя
             context.user_data['current_storage'] = link_id
             if 'extend_storage' in context.user_data:
                 del context.user_data['extend_storage']
-                
+            
             return TEMP_LINK
         
         # Если нет активного хранилища, возвращаемся в главное меню
@@ -1613,7 +1671,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
         # Получаем текущий срок действия
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT expires_at FROM temp_links WHERE link_id = ? AND user_id = ?', 
+        c.execute('SELECT expires_at, extension_count FROM temp_links WHERE link_id = ? AND user_id = ?', 
                  (link_id, update.effective_user.id))
         result = c.fetchone()
         
@@ -1622,11 +1680,24 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
                 "Хранилище не найдено или уже удалено.", 
                 reply_markup=get_menu_keyboard(update.effective_user.id)
             )
+            conn.close()
+            return MENU
+            
+        expires_at, extension_count = result
+        extension_count = extension_count or 0  # Если None, то считаем как 0
+        
+        # Проверяем, достигнут ли лимит продлений
+        max_extensions = 1  # Максимально допустимое количество продлений
+        if extension_count >= max_extensions:
+            await update.message.reply_text(
+                f"Достигнут лимит продлений хранилища (максимум {max_extensions}). Создайте новое хранилище.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            conn.close()
             return MENU
             
         # Разбираем дату
-        date_str = result[0]
-        current_expires_at = datetime.strptime(format_datetime(date_str), '%Y-%m-%d %H:%M:%S')
+        current_expires_at = datetime.strptime(format_datetime(expires_at), '%Y-%m-%d %H:%M:%S')
         
         # Проверяем, не истек ли срок хранилища
         if current_expires_at <= datetime.now():
@@ -1634,14 +1705,15 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
                 "Срок действия хранилища уже истек. Создайте новое хранилище.", 
                 reply_markup=get_menu_keyboard(update.effective_user.id)
             )
+            conn.close()
             return MENU
             
         # Рассчитываем новый срок действия
         duration_hours = duration_map[update.message.text]
         new_expires_at = current_expires_at + timedelta(hours=duration_hours)
         
-        # Обновляем срок действия в базе данных
-        c.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
+        # Обновляем срок действия и счетчик продлений в базе данных
+        c.execute('UPDATE temp_links SET expires_at = ?, extension_count = extension_count + 1 WHERE link_id = ?', 
                  (new_expires_at, link_id))
         conn.commit()
         
@@ -1667,7 +1739,8 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(
             f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
             f"🔗 Ссылка: {storage_url}\n"
-            f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}\n\n"
+            f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}\n"
+            f"🔄 Осталось продлений: {max_extensions - (extension_count + 1)}\n\n"
             f"Выберите действие:",
             reply_markup=markup
         )
@@ -2091,6 +2164,16 @@ async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time_left = storage['time_left']
             creator_name = storage['creator_name']
             
+            # Получаем количество продлений для этого хранилища
+            async with aiosqlite.connect(DB_PATH) as conn:
+                cursor = await conn.execute('SELECT extension_count FROM temp_links WHERE link_id = ?', 
+                    (link_id,))
+                result = await cursor.fetchone()
+                extension_count = result[0] if result and result[0] is not None else 0
+                # Максимум 1 продление
+                max_extensions = 1  # Максимально допустимое количество продлений
+                extensions_left = max_extensions - extension_count
+            
             # Добавляем информацию о создателе в текст кнопки
             storage_text = f"Хранилище {link_id[:8]}... ({file_count} файлов, {time_left}) от {creator_name}"
             keyboard.append([KeyboardButton(text=storage_text)])
@@ -2099,7 +2182,8 @@ async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'expires_at': expires_at,
                 'file_names': storage['file_names'],
                 'creator_name': creator_name,
-                'creator_id': storage['creator_id']
+                'creator_id': storage['creator_id'],
+                'extensions_left': extensions_left
             }
         
         keyboard.append([KeyboardButton(text="Назад")])
@@ -2150,7 +2234,8 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
             f"Управление хранилищем:\n\n"
             f"🔗 ID: {storage_data['link_id']}\n"
             f"👤 Создатель: {storage_data['creator_name']}\n"
-            f"⏱ Срок действия до: {format_datetime(storage_data['expires_at'])}\n\n"
+            f"⏱ Срок действия до: {format_datetime(storage_data['expires_at'])}\n"
+            f"🔄 Осталось продлений: {storage_data.get('extensions_left', 0)}\n\n"
             f"Выберите действие:",
             reply_markup=markup
         )
@@ -2237,15 +2322,39 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
         try:
             duration_hours = duration_map[text]
             
-            # Создаем и форматируем новую дату без микросекунд
-            expires_dt = datetime.now() + timedelta(hours=duration_hours)
-            new_expires_at = expires_dt.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Обновляем срок действия в базе данных асинхронно
+            # Получаем текущее количество продлений хранилища
             async with aiosqlite.connect(DB_PATH) as conn:
-                await conn.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
+                cursor = await conn.execute('SELECT extension_count FROM temp_links WHERE link_id = ?', 
+                         (storage_data['link_id'],))
+                result = await cursor.fetchone()
+                extension_count = result[0] if result and result[0] is not None else 0
+                
+                # Проверяем, достигнут ли лимит продлений
+                max_extensions = 1  # Максимально допустимое количество продлений
+                if extension_count >= max_extensions:
+                    await update.message.reply_text(
+                        f"Достигнут лимит продлений хранилища ({max_extensions}). Создайте новое хранилище.",
+                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+                    )
+                    return STORAGE_MANAGEMENT
+            
+                # Создаем и форматируем новую дату без микросекунд
+                expires_dt = datetime.now() + timedelta(hours=duration_hours)
+                new_expires_at = expires_dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Обновляем срок действия и счетчик продлений в базе данных
+                await conn.execute('UPDATE temp_links SET expires_at = ?, extension_count = extension_count + 1 WHERE link_id = ?', 
                          (new_expires_at, storage_data['link_id']))
                 await conn.commit()
+            
+            # Получаем обновленное количество продлений
+            cursor = await conn.execute('SELECT extension_count FROM temp_links WHERE link_id = ?', 
+                     (storage_data['link_id'],))
+            result = await cursor.fetchone()
+            extension_count = result[0] if result and result[0] is not None else 0
+            # Максимум 1 продление, но нужно учесть что продление уже произошло
+            max_extensions = 1  # Максимально допустимое количество продлений
+            extensions_left = max_extensions - (extension_count + 1)  
             
             # Форматируем текст о сроке продления
             duration_text = ""
@@ -2259,7 +2368,8 @@ async def process_storage_management(update: Update, context: ContextTypes.DEFAU
             
             await update.message.reply_text(
                 f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
-                f"⏱ Новый срок действия до: {new_expires_at}",
+                f"⏱ Новый срок действия до: {new_expires_at}\n"
+                f"🔄 Осталось продлений: {extensions_left}",
                 reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
             )
             
