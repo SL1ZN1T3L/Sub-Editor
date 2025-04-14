@@ -43,3 +43,4 @@ logs/
 Sub-Editor.code-workspace
 *fix*.py
 /flask_session
+epsiquad.py

@@ -414,24 +414,45 @@
             z-index: 2;
         }
         
-        @keyframes rainbow-animation {
-            0% {background-position: 0% 50%;}
-            50% {background-position: 100% 50%;}
-            100% {background-position: 0% 50%;}
+        .page-title::before {
+            display: none;
+        }
+
+        @keyframes rainbow-shift {
+            0% {
+                background-position: 0% 50%;
+            }
+            100% {
+                background-position: -200% 50%;
+            }
         }
         
-        .page-title::before {
-            content: "";
+        @keyframes rainbow-border {
+            0% {left: -100%;}
+            100% {left: 100%;}
+        }
+        
+        .page-title::after {
+            display: none;
+        }
+
+        /* НОВАЯ РЕАЛИЗАЦИЯ: простая и стабильная */
+        .rainbow-border {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 5px;
-            background: linear-gradient(90deg, 
-                #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #8f00ff, #ff0000);
-            background-size: 200% 200%;
-            animation: rainbow-animation 5s linear infinite;
-            z-index: 1;
+            background: linear-gradient(to right, 
+                red, orange, yellow, green, blue, indigo, violet, red);
+            background-size: 200% 100%;
+            animation: gradientMove 6s linear infinite;
+            z-index: 2;
+        }
+
+        @keyframes gradientMove {
+            0% { background-position: 0 0; }
+            100% { background-position: 200% 0; }
         }
         
         .drop-area {
@@ -488,6 +509,7 @@
     
     <div class="container mt-4">
         <div class="page-title">
+            <div class="rainbow-border"></div>
             <h1><i class="fas fa-cloud-upload-alt mr-2"></i> Временное хранилище</h1>
         </div>
         
@@ -785,7 +807,7 @@
                         
                         // Пытаемся удалить частично загруженный файл
                         try {
-                            await fetch(`/space/${linkId}/delete/${file.name}`, {
+                            await fetch(`/${linkId}/delete/${file.name}`, {
                                 method: 'POST',
                                 headers: {
                                     'X-CSRF-Token': csrfToken
@@ -816,7 +838,7 @@
                                 console.log(`Загрузка файла ${file.name} была отменена после запроса`);
                                 // Пытаемся удалить частично загруженный файл
                                 try {
-                                    await fetch(`/space/${linkId}/delete/${file.name}`, {
+                                    await fetch(`/${linkId}/delete/${file.name}`, {
                                         method: 'POST',
                                         headers: {
                                             'X-CSRF-Token': csrfToken
@@ -828,7 +850,7 @@
                                 return;
                             }
 
-                            const response = await fetch(`/space/${linkId}/upload`, {
+                            const response = await fetch(`/${linkId}/upload`, {
                                 method: 'POST',
                                 body: formData,
                                 headers: {
@@ -994,8 +1016,11 @@
                 // Отправляем запрос на сервер для удаления частично загруженного файла
                 const filename = document.querySelector(`#file-upload-${fileIndex} .file-name`).textContent;
                 if (filename) {
-                    fetch(`/space/${linkId}/delete/${filename}`, {
-                        method: 'POST'
+                    fetch(`/${linkId}/delete/${filename}`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-Token': csrfToken
+                        }
                     }).catch(err => console.error('Не удалось удалить частично загруженный файл:', err));
                 }
                 
@@ -1047,27 +1072,64 @@
         }
 
         async function deleteFile(filename) {
-            if (!confirm('Вы уверены, что хотите удалить этот файл?')) {
-                return;
-            }
-            
-            try {
-                const response = await fetch(`/space/${linkId}/delete/${filename}`, {
-                    method: 'POST'
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || 'Ошибка при удалении файла');
+            if (confirm(`Вы уверены, что хотите удалить файл "${escapeHtml(filename)}"?`)) {
+                try {
+                    const response = await fetch(`/${linkId}/delete/${encodeURIComponent(filename)}`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRF-Token': csrfToken
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            showToast('Файл успешно удален', 'success');
+                            setTimeout(() => location.reload(), 1000);
+                        } else if (result.error) {
+                            showToast(result.error, 'error');
+                        }
+                    } else {
+                        const data = await response.json();
+                        
+                        // Обрабатываем ошибку CSRF токена
+                        if (response.status === 403 && data.error && data.error.includes('CSRF')) {
+                            showToast('Обновление сессии...', 'info');
+                            const tokenRefreshed = await refreshCsrfToken();
+                            
+                            if (tokenRefreshed) {
+                                // Повторяем запрос с новым токеном
+                                const retryResponse = await fetch(`/${linkId}/delete/${encodeURIComponent(filename)}`, {
+                                    method: 'POST',
+                                    headers: {
+                                        'X-CSRF-Token': csrfToken
+                                    }
+                                });
+                                
+                                if (retryResponse.ok) {
+                                    const retryResult = await retryResponse.json();
+                                    
+                                    if (retryResult.success) {
+                                        showToast('Файл успешно удален', 'success');
+                                        setTimeout(() => location.reload(), 1000);
+                                    } else if (retryResult.error) {
+                                        showToast(retryResult.error, 'error');
+                                    }
+                                } else {
+                                    showToast('Не удалось удалить файл после обновления сессии', 'error');
+                                }
+                            } else {
+                                showToast('Не удалось обновить сессию. Пожалуйста, обновите страницу', 'error');
+                            }
+                        } else {
+                            showToast(data.error || 'Произошла ошибка при удалении файла', 'error');
+                        }
+                    }
+                } catch (error) {
+                    showToast('Произошла ошибка при удалении файла', 'error');
+                    console.error('Ошибка:', error);
                 }
-                
-                if (data.success) {
-                    showToast('Файл успешно удален', 'success');
-                    setTimeout(() => location.reload(), 1000);
-                }
-            } catch (error) {
-                handleError(error);
             }
         }
 
@@ -1107,7 +1169,7 @@
             }
 
             try {
-                const response = await fetch(`/space/${linkId}/download-multiple`, {
+                const response = await fetch(`/${linkId}/download-multiple`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1149,9 +1211,11 @@
                 return;
             }
 
+            let csrfError = false;
+
             for (const filename of selectedFiles) {
                 try {
-                    const response = await fetch(`/space/${linkId}/delete/${filename}`, {
+                    const response = await fetch(`/${linkId}/delete/${filename}`, {
                         method: 'POST',
                         headers: {
                             'X-CSRF-Token': csrfToken
@@ -1160,6 +1224,16 @@
                     
                     if (!response.ok) {
                         const error = await response.json();
+                        
+                        // Если получили ошибку CSRF, пытаемся обновить токен
+                        if (response.status === 403 && error.error && error.error.includes('CSRF') && !csrfError) {
+                            csrfError = true; // Устанавливаем флаг, чтобы не повторять обновление для каждого файла
+                            showToast('Обновление сессии...', 'info');
+                            await refreshCsrfToken();
+                            // Продолжим обработку файлов с новым токеном
+                            continue;
+                        }
+                        
                         console.error(`Ошибка при удалении файла ${filename}:`, error);
                         showToast(`Ошибка при удалении файла ${filename}: ${error.error || 'неизвестная ошибка'}`, 'error');
                     }
@@ -1179,19 +1253,49 @@
             }
 
             try {
-                const response = await fetch(`/space/${linkId}/delete-all`, {
-                    method: 'POST'
+                const response = await fetch(`/${linkId}/delete-all`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRF-Token': csrfToken
+                    }
                 });
                 
                 if (!response.ok) {
                     const data = await response.json();
-                    throw new Error(data.error || 'Ошибка при удалении всех файлов');
+                    
+                    // Обрабатываем ошибку CSRF токена
+                    if (response.status === 403 && data.error && data.error.includes('CSRF')) {
+                        showToast('Обновление сессии...', 'info');
+                        const tokenRefreshed = await refreshCsrfToken();
+                        
+                        if (tokenRefreshed) {
+                            // Повторяем запрос с новым токеном
+                            const retryResponse = await fetch(`/${linkId}/delete-all`, {
+                                method: 'POST',
+                                headers: {
+                                    'X-CSRF-Token': csrfToken
+                                }
+                            });
+                            
+                            if (retryResponse.ok) {
+                                location.reload();
+                                return;
+                            } else {
+                                const retryData = await retryResponse.json();
+                                throw new Error(retryData.error || 'Ошибка при удалении всех файлов');
+                            }
+                        } else {
+                            throw new Error('Не удалось обновить сессию. Пожалуйста, обновите страницу.');
+                        }
+                    } else {
+                        throw new Error(data.error || 'Ошибка при удалении всех файлов');
+                    }
                 }
                 
                 location.reload();
             } catch (error) {
                 console.error('Ошибка:', error);
-                alert(`Ошибка при удалении всех файлов: ${error.message}`);
+                showToast(`Ошибка при удалении всех файлов: ${error.message}`, 'error');
             }
         });
 
@@ -1206,7 +1310,7 @@
             themeIcon.className = newTheme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
             
             try {
-                const response = await fetch(`/space/${linkId}/set-theme`, {
+                const response = await fetch(`/${linkId}/set-theme`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1283,7 +1387,32 @@
         }
         
         // Устанавливаем CSRF-токен для всех AJAX запросов
-        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        let csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        
+        // Функция для обновления CSRF токена после ошибки
+        async function refreshCsrfToken() {
+            try {
+                // Просто делаем безопасный запрос, чтобы обновить сессию и получить новый токен
+                const response = await fetch(window.location.href);
+                if (response.ok) {
+                    const html = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const newToken = doc.querySelector('meta[name="csrf-token"]').getAttribute('content');
+                    
+                    if (newToken) {
+                        csrfToken = newToken;
+                        document.querySelector('meta[name="csrf-token"]').setAttribute('content', newToken);
+                        console.log('CSRF токен обновлен');
+                        return true;
+                    }
+                }
+                return false;
+            } catch (error) {
+                console.error('Ошибка при обновлении CSRF токена:', error);
+                return false;
+            }
+        }
         
         // Добавляем CSRF-токен к каждому AJAX запросу
         function setupAjaxCSRF() {
@@ -1306,56 +1435,6 @@
             };
         }
         
-        // Функция удаления файла с CSRF защитой
-        async function deleteFile(filename) {
-            if (confirm(`Вы уверены, что хотите удалить файл "${escapeHtml(filename)}"?`)) {
-                try {
-                    const response = await fetch(`/space/${linkId}/delete/${encodeURIComponent(filename)}`, {
-                        method: 'POST',
-                        headers: {
-                            'X-CSRF-Token': csrfToken
-                        }
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        location.reload();
-                    } else if (result.error) {
-                        showToast(result.error, 'error');
-                    }
-                } catch (error) {
-                    showToast('Произошла ошибка при удалении файла', 'error');
-                    console.error('Ошибка:', error);
-                }
-            }
-        }
-        
-        // Функция удаления всех файлов с CSRF защитой
-        async function deleteAllFiles() {
-            if (confirm('Вы уверены, что хотите удалить все файлы и хранилище?')) {
-                try {
-                    const response = await fetch(`/space/${linkId}/delete-all`, {
-                        method: 'POST',
-                        headers: {
-                            'X-CSRF-Token': csrfToken
-                        }
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        window.location.href = '/';
-                    } else if (result.error) {
-                        showToast(result.error, 'error');
-                    }
-                } catch (error) {
-                    showToast('Произошла ошибка при удалении хранилища', 'error');
-                    console.error('Ошибка:', error);
-                }
-            }
-        }
-        
         // Скачивание нескольких файлов
         async function downloadSelected() {
             const checkboxes = document.querySelectorAll('.file-checkbox:checked');
@@ -1371,7 +1450,7 @@
             });
             
             try {
-                const response = await fetch(`/space/${linkId}/download-multiple`, {
+                const response = await fetch(`/${linkId}/download-multiple`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

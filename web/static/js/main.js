@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         try {
-            const response = await fetch(`/space/${window.linkId}/upload`, {
+            const response = await fetch(`/${window.linkId}/upload`, {
                 method: 'POST',
                 body: formData
             });
@@ -43,7 +43,7 @@ async function deleteFile(filename) {
     }
 
     try {
-        const response = await fetch(`/space/${window.linkId}/delete/${filename}`, {
+        const response = await fetch(`/${window.linkId}/delete/${filename}`, {
             method: 'POST'
         });
 

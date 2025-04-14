@@ -470,7 +470,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if active_storage:
                 link_id, expires_at = active_storage
-                storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+                storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
                 
                 # Создаем клавиатуру с опцией удаления
                 keyboard = [
@@ -1392,7 +1392,7 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if storage_list:
             # Берем первое активное хранилище
             storage = storage_list[0]
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{storage['link_id']}"
+            storage_url = f"{TEMP_LINK_DOMAIN}/{storage['link_id']}"
             await update.message.reply_text(
                 f"У вас уже есть активное временное хранилище!\n\n"
                 f"🔗 Ссылка: {storage_url}\n"
@@ -1457,7 +1457,7 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         if storage_list:
             # Берем первое активное хранилище
             storage = storage_list[0]
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{storage['link_id']}"
+            storage_url = f"{TEMP_LINK_DOMAIN}/{storage['link_id']}"
             
             # Создаем клавиатуру с опцией удаления
             keyboard = [
@@ -1492,7 +1492,7 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             await conn.commit()
         
         # Формируем URL для доступа к хранилищу
-        storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+        storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
         
         # Отправляем пользователю ссылку с кнопкой удаления
         keyboard = [
@@ -1563,7 +1563,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
             expires_at = result[0]
             conn.close()
             
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+            storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
             
             await update.message.reply_text(
                 f"Управление хранилищем:\n\n"
@@ -1662,7 +1662,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
         ]
         markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
-        storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
+        storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
         
         await update.message.reply_text(
             f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
@@ -2524,30 +2524,7 @@ if __name__ == '__main__':
         
         # Добавляем обработчик разговора
         app.add_handler(conv_handler)
-        
-        # Обработчик сигналов для корректного завершения работы
-        def signal_handler(signum, frame):
-            """Обработка сигналов остановки"""
-            print(f"Получен сигнал {signum}, останавливаем бота...")
-            # Сначала остановим обновления (polling)
-            loop = asyncio.get_event_loop()
-            
-            # Создаем функцию для корректной остановки
-            async def shutdown_properly():
-                # Сначала останавливаем updater, затем application
-                await app.updater.stop()
-                await app.stop()
-                # Остановка цикла событий
-                loop.stop()
-            
-            # Запускаем корректное завершение работы
-            loop.create_task(shutdown_properly())
-            
-        # Регистрируем обработчики сигналов
-        import signal
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        
+
         # Выводим информацию о запуске
         print(f"Бот запущен и готов к работе!")
         print(f"База данных: {DB_PATH}")
@@ -2636,4 +2613,5 @@ def get_user_lines_to_keep_sync(user_id):
             result = c.fetchone()
         return result[0] if result else 10
     finally:
+        conn.close()
         conn.close()

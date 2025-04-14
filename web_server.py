@@ -102,9 +102,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 
 # Защита от брут-форса и rate limiting
-app.config['MAX_REQUESTS_PER_MINUTE'] = int(os.getenv('MAX_REQUESTS_PER_MINUTE', 60))
-app.config['MAX_FAILED_ATTEMPTS'] = int(os.getenv('MAX_FAILED_ATTEMPTS', 5))
-app.config['BLOCK_TIME_SECONDS'] = int(os.getenv('BLOCK_TIME_SECONDS', 300))  # 5 минут
+# ИСПРАВЛЕНО: Увеличены лимиты для предотвращения ложных блокировок
+app.config['MAX_REQUESTS_PER_MINUTE'] = int(os.getenv('MAX_REQUESTS_PER_MINUTE', 180))  # Было 60, стало 180
+app.config['MAX_FAILED_ATTEMPTS'] = int(os.getenv('MAX_FAILED_ATTEMPTS', 10))  # Было 5, стало 10
+app.config['BLOCK_TIME_SECONDS'] = int(os.getenv('BLOCK_TIME_SECONDS', 180))  # Было 300 (5 минут), стало 180 (3 минуты)
 
 # Отключаем кэширование ответов для предотвращения устаревших данных
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
@@ -141,8 +142,14 @@ def check_rate_limit(ip_address):
     # Увеличиваем счетчик
     counter['count'] += 1
     
+    # ИСПРАВЛЕНО: Добавляем исключения для static-файлов и ресурсов, чтобы не блокировать обычных пользователей
+    if request.path.startswith('/static/') or request.path.endswith(('.js', '.css', '.ico', '.png', '.jpg', '.jpeg', '.gif')):
+        return True
+        
     # Проверяем превышение лимита
     if counter['count'] > app.config['MAX_REQUESTS_PER_MINUTE']:
+        # ИСПРАВЛЕНО: Добавляем логирование превышения лимита
+        logger.warning(f"IP {ip_address} превысил лимит запросов: {counter['count']} запросов за минуту")
         return False
     
     return True
@@ -191,6 +198,10 @@ def before_request_middleware():
     """Middleware, выполняемый перед каждым запросом"""
     # Сохраняем время начала запроса для измерения длительности
     request.start_time = time.time()
+    
+    # ИСПРАВЛЕНО: Пропускаем проверки для статических файлов
+    if request.path.startswith('/static/'):
+        return None
     
     # Применяем rate limiting
     rate_limit_result = rate_limit_middleware()
@@ -706,7 +717,7 @@ def index():
     """Главная страница"""
     return render_template('index.html')
 
-@app.route('/space/<link_id>')
+@app.route('/<link_id>')
 def temp_storage(link_id):
     """Страница временного хранилища"""
     try:
@@ -848,7 +859,7 @@ def temp_storage(link_id):
         logger.error(f"Ошибка при загрузке страницы: {str(e)}")
         return "Произошла ошибка при загрузке страницы. Пожалуйста, попробуйте позже.", 500
 
-@app.route('/space/<link_id>/upload', methods=['POST'])
+@app.route('/<link_id>/upload', methods=['POST'])
 @csrf_protected
 def upload_file(link_id):
     """Загрузка файла в временное хранилище"""
@@ -934,8 +945,9 @@ def upload_file(link_id):
         current_size = get_temp_storage_size(link_id)
         
         # Формируем безопасное имя файла
+        # ИСПРАВЛЕНО: сохраняем имя файла, а не только расширение
         filename = secure_filename(original_filename)
-        if not filename:
+        if not filename or filename == '.':
             logger.error(f"Не удалось создать безопасное имя файла из {original_filename}")
             return jsonify({'error': 'Недопустимое имя файла'}), 400
         
@@ -1095,7 +1107,7 @@ def upload_file(link_id):
         logger.error(f"Общая ошибка при загрузке файла: {str(e)}")
         return jsonify({'error': 'Произошла ошибка при загрузке файла'}), 500
 
-@app.route('/space/<link_id>/delete-partial/<filename>', methods=['POST'])
+@app.route('/<link_id>/delete-partial/<filename>', methods=['POST'])
 @csrf_protected
 def delete_partial_file(link_id, filename):
     """Удаление частично загруженного файла"""
@@ -1142,7 +1154,7 @@ def delete_partial_file(link_id, filename):
         logger.error(f"Ошибка при удалении частично загруженного файла: {str(e)}")
         return jsonify({'error': 'Произошла ошибка при удалении файла'}), 500
 
-@app.route('/space/<link_id>/delete/<filename>', methods=['POST'])
+@app.route('/<link_id>/delete/<filename>', methods=['POST'])
 @csrf_protected
 def delete_file(link_id, filename):
     """Удаление файла из временного хранилища"""
@@ -1183,7 +1195,7 @@ def delete_file(link_id, filename):
         logger.error(f"Ошибка при удалении файла {filename}: {str(e)}")
         return jsonify({'error': 'Произошла ошибка при удалении файла'}), 500
 
-@app.route('/space/<link_id>/delete-all', methods=['POST'])
+@app.route('/<link_id>/delete-all', methods=['POST'])
 @csrf_protected
 def delete_all_storage(link_id):
     """Удаление всего временного хранилища"""
@@ -1213,7 +1225,7 @@ def delete_all_storage(link_id):
         logger.error(f"Ошибка при удалении хранилища: {str(e)}")
         return jsonify({'error': 'Произошла ошибка при удалении хранилища'}), 500
 
-@app.route('/space/<link_id>/download/<filename>')
+@app.route('/<link_id>/download/<filename>')
 def download_file(link_id, filename):
     """Скачивание файла из временного хранилища"""
     try:
@@ -1304,7 +1316,7 @@ def download_file(link_id, filename):
         logger.error(f"Ошибка при скачивании файла: {str(e)}")
         return "Произошла ошибка при скачивании файла", 500
 
-@app.route('/space/<link_id>/download-multiple', methods=['POST'])
+@app.route('/<link_id>/download-multiple', methods=['POST'])
 @csrf_protected
 def download_multiple_files(link_id):
     """Скачивание нескольких файлов в архиве"""
@@ -1411,7 +1423,7 @@ def download_multiple_files(link_id):
         logger.error(f"Ошибка при скачивании файлов: {str(e)}")
         return jsonify({'error': 'Произошла ошибка при скачивании файлов'}), 500
 
-@app.route('/space/<link_id>/set-theme', methods=['POST'])
+@app.route('/<link_id>/set-theme', methods=['POST'])
 @csrf_protected
 def set_theme(link_id):
     """Установка темы для пользователя"""
