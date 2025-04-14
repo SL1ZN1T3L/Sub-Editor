@@ -103,9 +103,9 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 
 # Защита от брут-форса и rate limiting
 # ИСПРАВЛЕНО: Увеличены лимиты для предотвращения ложных блокировок
-app.config['MAX_REQUESTS_PER_MINUTE'] = int(os.getenv('MAX_REQUESTS_PER_MINUTE', 180))  # Было 60, стало 180
-app.config['MAX_FAILED_ATTEMPTS'] = int(os.getenv('MAX_FAILED_ATTEMPTS', 10))  # Было 5, стало 10
-app.config['BLOCK_TIME_SECONDS'] = int(os.getenv('BLOCK_TIME_SECONDS', 180))  # Было 300 (5 минут), стало 180 (3 минуты)
+app.config['MAX_REQUESTS_PER_MINUTE'] = int(os.getenv('MAX_REQUESTS_PER_MINUTE'))  # Было 60, стало 180
+app.config['MAX_FAILED_ATTEMPTS'] = int(os.getenv('MAX_FAILED_ATTEMPTS'))  # Было 5, стало 10
+app.config['BLOCK_TIME_SECONDS'] = int(os.getenv('BLOCK_TIME_SECONDS'))  # Было 300 (5 минут), стало 180 (3 минуты)
 
 # Отключаем кэширование ответов для предотвращения устаревших данных
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
