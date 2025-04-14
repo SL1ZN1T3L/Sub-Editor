@@ -45,3 +45,4 @@ Sub-Editor.code-workspace
 /flask_session
 epsiquad.py
 epsiquad_library.py
+example_bot.py
