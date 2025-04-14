@@ -337,7 +337,7 @@ async def init_db_async():
             
             # Если колонки theme нет, добавляем её
             if 'theme' not in columns:
-                await conn.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "light"')
+                await conn.execute('ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT "dark"')
             
             # Проверяем, есть ли таблица temp_links
             cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='temp_links'")
@@ -541,10 +541,10 @@ async def get_user_theme_async(user_id):
         async with aiosqlite.connect(DB_PATH) as conn:
             cursor = await conn.execute('SELECT theme FROM user_settings WHERE user_id = ?', (user_id,))
             result = await cursor.fetchone()
-            return result[0] if result and result[0] else 'light'
+            return result[0] if result and result[0] else 'dark'
     except Exception as e:
         logger.error(f"Ошибка при получении темы пользователя: {str(e)}")
-        return 'light'
+        return 'dark'
 
 def get_user_theme(user_id):
     """Получение темы пользователя (синхронная обертка)"""
@@ -772,11 +772,11 @@ def temp_storage(link_id):
             
             user_data = get_user_id_and_expires_at()
             user_id, expires_at = user_data if user_data else (None, None)
-            theme = get_user_theme(user_id) if user_id else 'light'
+            theme = get_user_theme(user_id) if user_id else 'dark'
         except Exception as e:
             logger.error(f"Ошибка при получении данных пользователя для хранилища {link_id}: {str(e)}")
             user_id, expires_at = None, None
-            theme = 'light'
+            theme = 'dark'
         
         # Рассчитываем оставшееся время до истечения срока хранилища
         remaining_time = None

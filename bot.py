@@ -175,7 +175,7 @@ async def setup_database():
                  (user_id INTEGER PRIMARY KEY,
                   language TEXT DEFAULT 'ru',
                   lines_to_keep INTEGER DEFAULT 10,
-                  theme TEXT DEFAULT 'light',
+                  theme TEXT DEFAULT 'dark',
                   FOREIGN KEY (user_id) REFERENCES users(user_id))''')
         
         # Проверяем наличие колонок в user_settings
@@ -184,7 +184,7 @@ async def setup_database():
         if 'lines_to_keep' not in columns:
             await conn.execute("ALTER TABLE user_settings ADD COLUMN lines_to_keep INTEGER DEFAULT 10")
         if 'theme' not in columns:
-            await conn.execute("ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT 'light'")
+            await conn.execute("ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT 'dark'")
         
         # Создание таблицы temp_links
         await conn.execute('''CREATE TABLE IF NOT EXISTS temp_links
