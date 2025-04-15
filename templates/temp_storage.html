@@ -42,6 +42,40 @@
         }
         
         .file-table {
+            width: 100%;
+            border-collapse: collapse;
+            border-spacing: 0;
+        }
+        
+        .file-table th {
+            padding: 12px 10px;
+            text-align: left;
+            background-color: var(--card-bg);
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            border-bottom: 2px solid var(--border-color);
+        }
+        
+        .file-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        /* Удаляем или комментируем правило, убирающее границу у последней строки */
+        /* .file-table tr:last-child td {
+            border-bottom: none;
+        } */
+        
+        .file-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: flex-start;
+            min-width: 100px;
+        }
+        
+        .file-table {
             color: var(--text-color);
         }
         
@@ -179,37 +213,6 @@
             margin-top: 15px;
         }
         
-        .file-table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-        }
-        
-        .file-table th {
-            padding: 12px 10px;
-            text-align: left;
-            background-color: var(--card-bg);
-            position: sticky;
-            top: 0;
-            z-index: 2;
-            border-bottom: 2px solid var(--border-color);
-        }
-        
-        .file-table td {
-            padding: 10px 8px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .file-table tr:last-child td {
-            border-bottom: none;
-        }
-        .file-actions {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            justify-content: flex-start;
-            min-width: 100px;
-        }
         .delete-selected {
             margin-bottom: 10px;
             padding: 5px 15px;
@@ -954,6 +957,30 @@
             white-space: pre-wrap;
             text-align: left;
         }
+
+        .file-name-wrapper {
+            display: flex;
+            align-items: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .file-type-icon {
+            font-size: 16px;
+            margin-right: 8px;
+            min-width: 18px;
+            text-align: center;
+            color: var(--primary-color);
+            flex-shrink: 0;
+        }
+        
+        .file-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex-grow: 1;
+        }
     </style>
 </head>
 <body>
@@ -1078,7 +1105,9 @@
                                     <td>
                                         <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
                                     </td>
-                                    <td class="text-truncate file-name" style="max-width: 200px;" title="{{ file.name|e }}">{{ file.name|e }}</td>
+                                    <td class="text-truncate file-name-container" style="max-width: 200px;" title="{{ file.name|e }}">
+                                        <span class="file-name">{{ file.name|e }}</span>
+                                    </td>
                                     <td>{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
                                     <td>{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
                                     <td class="file-actions">
@@ -1880,19 +1909,7 @@
             initCountdown();
 
             // Добавляем иконки типов файлов к именам
-            document.querySelectorAll('.file-name').forEach(function(nameEl) {
-                const filename = nameEl.textContent.trim();
-                const iconClass = getFileTypeIcon(filename);
-                
-                // Создаем элемент для иконки
-                const iconEl = document.createElement('i');
-                iconEl.className = `fas ${iconClass} file-type-icon`;
-                
-                // Добавляем иконку перед текстом
-                nameEl.innerHTML = '';
-                nameEl.appendChild(iconEl);
-                nameEl.appendChild(document.createTextNode(filename));
-            });
+            addFileIcons();
         });
 
         // Функция для показа уведомлений
@@ -2163,9 +2180,15 @@
             }
         });
 
-        // Функция для определения иконки типа файла
+        // Функция для получения иконки типа файла
         function getFileTypeIcon(filename) {
-            const ext = filename.split('.').pop().toLowerCase();
+            if (!filename || typeof filename !== 'string') return 'fa-file';
+            
+            // Получаем расширение файла
+            const lastDotIndex = filename.lastIndexOf('.');
+            if (lastDotIndex === -1) return 'fa-file'; // Нет расширения
+            
+            const ext = filename.substring(lastDotIndex + 1).toLowerCase();
             
             const iconMap = {
                 // Изображения
@@ -2221,9 +2244,8 @@
             return iconMap[ext] || iconMap['default'];
         }
         
-        // Обновляем отображение списка файлов после загрузки страницы
-        document.addEventListener('DOMContentLoaded', function() {
-            // Добавляем иконки типов файлов к именам
+        // Исправленная функция добавления иконок к именам файлов
+        function addFileIcons() {
             document.querySelectorAll('.file-name').forEach(function(nameEl) {
                 const filename = nameEl.textContent.trim();
                 const iconClass = getFileTypeIcon(filename);
@@ -2232,13 +2254,23 @@
                 const iconEl = document.createElement('i');
                 iconEl.className = `fas ${iconClass} file-type-icon`;
                 
-                // Добавляем иконку перед текстом
+                // Создаем контейнер для иконки и текста
+                const container = document.createElement('div');
+                container.className = 'file-name-wrapper';
+                container.appendChild(iconEl);
+                
+                // Создаем элемент для текста
+                const textEl = document.createElement('span');
+                textEl.className = 'file-text';
+                textEl.textContent = filename;
+                container.appendChild(textEl);
+                
+                // Заменяем содержимое элемента
                 nameEl.innerHTML = '';
-                nameEl.appendChild(iconEl);
-                nameEl.appendChild(document.createTextNode(filename));
+                nameEl.appendChild(container);
             });
-        });
-
+        }
+        
         // Variables for file preview
         let previewableFiles = [];
         let currentPreviewIndex = 0;
