@@ -10,8 +10,8 @@
     <title>Временное хранилище</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/preview.css">
-    <script src="/static/js/preview.js" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/preview.css') }}">
+    <script src="{{ url_for('static', filename='js/preview.js') }}" defer></script>
     <style>
         :root[data-theme="light"] {
             --bg-color: #ffffff;
@@ -20,6 +20,8 @@
             --border-color: #dee2e6;
             --hover-bg: #f8f9fa;
             --shadow-color: rgba(0,0,0,0.1);
+            --info-color: #17a2b8;
+            --info-hover-color: #138496;
         }
         
         :root[data-theme="dark"] {
@@ -29,6 +31,8 @@
             --border-color: #404040;
             --hover-bg: #3d3d3d;
             --shadow-color: rgba(0,0,0,0.3);
+            --info-color: #17a2b8;
+            --info-hover-color: #138496;
         }
         
         body {
@@ -69,10 +73,11 @@
         
         .file-actions {
             display: flex;
-            gap: 10px;
+            gap: 8px;
             align-items: center;
             justify-content: flex-start;
-            min-width: 100px;
+            min-width: 120px;
+            padding-right: 10px;
         }
         
         .file-table {
@@ -282,8 +287,10 @@
             from { background-position: 40px 0; }
             to { background-position: 0 0; }
         }
-        .btn-download, .btn-delete {
-            padding: 6px 12px;
+        .btn-download, .btn-delete, .btn-preview {
+            width: 36px;
+            height: 36px;
+            padding: 0;
             border-radius: 4px;
             border: none;
             cursor: pointer;
@@ -291,7 +298,6 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            min-width: 36px;
         }
         .btn-download {
             background-color: #28a745;
@@ -312,6 +318,18 @@
             color: white;
             transform: translateY(-2px);
             box-shadow: 0 2px 4px var(--shadow-color);
+        }
+        .btn-preview {
+            background-color: var(--info-color);
+            color: white;
+        }
+        .btn-preview:hover {
+            background-color: var(--info-hover-color, #138496);
+            transform: translateY(-2px);
+            box-shadow: 0 2px 4px var(--shadow-color);
+        }
+        .file-preview-button {
+            display: none;
         }
         /* Стили для всплывающих уведомлений */
         .toast-container {
@@ -902,49 +920,6 @@
             background: rgba(255, 255, 255, 0.2);
         }
         
-        .file-preview-button {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            background: none;
-            border: none;
-            color: var(--primary-color);
-            font-size: 16px;
-            cursor: pointer;
-            padding: 2px;
-            margin-left: 5px;
-            border-radius: 4px;
-            transition: all 0.2s ease;
-        }
-        
-        .file-preview-button:hover {
-            background-color: rgba(74, 111, 165, 0.1);
-            color: var(--primary-color);
-        }
-        
-        .preview-loading {
-            color: white;
-            font-size: 18px;
-            text-align: center;
-        }
-        
-        .preview-error {
-            color: white;
-            font-size: 16px;
-            text-align: center;
-            max-width: 400px;
-        }
-        
-        .preview-error i {
-            font-size: 48px;
-            margin-bottom: 20px;
-            color: #f14668;
-        }
-        
-        .preview-error p {
-            margin-bottom: 20px;
-        }
-        
         .preview-text {
             background: white;
             color: #333;
@@ -1113,12 +1088,12 @@
                                     <td class="file-actions">
                                         {% set ext = file.name.split('.')[-1]|lower %}
                                         {% if ext in ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'pdf', 'txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js'] %}
-                                        <button class="btn btn-preview" onclick="showPreview('{{ file.name|e|escapejs }}')" title="Предпросмотр">
+                                        <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
                                             <i class="fas fa-eye"></i>
                                         </button>
                                         {% endif %}
                                         <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}" 
-                                            class="btn btn-download" title="Скачать">
+                                            class="btn btn-download" title="Скачать" download>
                                             <i class="fas fa-download"></i>
                                         </a>
                                         <button class="btn btn-delete" 
@@ -1907,9 +1882,6 @@
             
             updateButtonsVisibility();
             initCountdown();
-
-            // Добавляем иконки типов файлов к именам
-            addFileIcons();
         });
 
         // Функция для показа уведомлений
@@ -2178,354 +2150,6 @@
             if (e.target === shareModal) {
                 shareModal.classList.remove('active');
             }
-        });
-
-        // Функция для получения иконки типа файла
-        function getFileTypeIcon(filename) {
-            if (!filename || typeof filename !== 'string') return 'fa-file';
-            
-            // Получаем расширение файла
-            const lastDotIndex = filename.lastIndexOf('.');
-            if (lastDotIndex === -1) return 'fa-file'; // Нет расширения
-            
-            const ext = filename.substring(lastDotIndex + 1).toLowerCase();
-            
-            const iconMap = {
-                // Изображения
-                'jpg': 'fa-file-image',
-                'jpeg': 'fa-file-image',
-                'png': 'fa-file-image',
-                'gif': 'fa-file-image',
-                'svg': 'fa-file-image',
-                'webp': 'fa-file-image',
-                
-                // Документы
-                'pdf': 'fa-file-pdf',
-                'doc': 'fa-file-word',
-                'docx': 'fa-file-word',
-                'xls': 'fa-file-excel',
-                'xlsx': 'fa-file-excel',
-                'ppt': 'fa-file-powerpoint',
-                'pptx': 'fa-file-powerpoint',
-                
-                // Текстовые файлы
-                'txt': 'fa-file-alt',
-                'md': 'fa-file-alt',
-                'csv': 'fa-file-csv',
-                'json': 'fa-file-code',
-                'xml': 'fa-file-code',
-                'html': 'fa-file-code',
-                'css': 'fa-file-code',
-                'js': 'fa-file-code',
-                
-                // Архивы
-                'zip': 'fa-file-archive',
-                'rar': 'fa-file-archive',
-                '7z': 'fa-file-archive',
-                'tar': 'fa-file-archive',
-                'gz': 'fa-file-archive',
-                
-                // Аудио
-                'mp3': 'fa-file-audio',
-                'wav': 'fa-file-audio',
-                'ogg': 'fa-file-audio',
-                
-                // Видео
-                'mp4': 'fa-file-video',
-                'avi': 'fa-file-video',
-                'mov': 'fa-file-video',
-                'wmv': 'fa-file-video',
-                'mkv': 'fa-file-video',
-                
-                // По умолчанию
-                'default': 'fa-file'
-            };
-            
-            return iconMap[ext] || iconMap['default'];
-        }
-        
-        // Исправленная функция добавления иконок к именам файлов
-        function addFileIcons() {
-            document.querySelectorAll('.file-name').forEach(function(nameEl) {
-                const filename = nameEl.textContent.trim();
-                const iconClass = getFileTypeIcon(filename);
-                
-                // Создаем элемент для иконки
-                const iconEl = document.createElement('i');
-                iconEl.className = `fas ${iconClass} file-type-icon`;
-                
-                // Создаем контейнер для иконки и текста
-                const container = document.createElement('div');
-                container.className = 'file-name-wrapper';
-                container.appendChild(iconEl);
-                
-                // Создаем элемент для текста
-                const textEl = document.createElement('span');
-                textEl.className = 'file-text';
-                textEl.textContent = filename;
-                container.appendChild(textEl);
-                
-                // Заменяем содержимое элемента
-                nameEl.innerHTML = '';
-                nameEl.appendChild(container);
-            });
-        }
-        
-        // Variables for file preview
-        let previewableFiles = [];
-        let currentPreviewIndex = 0;
-        
-        // Function to initialize preview buttons
-        function initPreviewButtons() {
-            document.querySelectorAll('.file-item').forEach(function(row) {
-                const filenameElement = row.querySelector('.file-name');
-                if (!filenameElement) return;
-                
-                const filename = filenameElement.textContent.trim();
-                const ext = filename.split('.').pop().toLowerCase();
-                
-                // Check if this file type can be previewed
-                if (isPreviewableFile(ext)) {
-                    // Create and append preview button if it doesn't exist
-                    if (!filenameElement.querySelector('.file-preview-button')) {
-                        const previewBtn = document.createElement('button');
-                        previewBtn.className = 'file-preview-button';
-                        previewBtn.title = 'Предпросмотр';
-                        previewBtn.innerHTML = '<i class="fas fa-eye"></i>';
-                        previewBtn.dataset.filename = filename;
-                        
-                        previewBtn.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            showPreview(filename);
-                        });
-                        
-                        filenameElement.appendChild(previewBtn);
-                    }
-                }
-            });
-            
-            // Add preview button to actions column as well
-            document.querySelectorAll('.file-item').forEach(function(row) {
-                const actionsCell = row.querySelector('.file-actions');
-                const filenameElement = row.querySelector('.file-name');
-                if (!actionsCell || !filenameElement) return;
-                
-                const filename = filenameElement.textContent.trim();
-                const ext = filename.split('.').pop().toLowerCase();
-                
-                if (isPreviewableFile(ext)) {
-                    // Add preview button in actions column if it doesn't exist
-                    if (!actionsCell.querySelector('.btn-preview')) {
-                        const previewBtn = document.createElement('button');
-                        previewBtn.className = 'btn btn-preview';
-                        previewBtn.title = 'Предпросмотр';
-                        previewBtn.innerHTML = '<i class="fas fa-eye"></i>';
-                        previewBtn.dataset.filename = filename;
-                        
-                        previewBtn.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            showPreview(filename);
-                        });
-                        
-                        // Insert before download button
-                        const downloadButton = actionsCell.querySelector('.btn-download');
-                        if (downloadButton) {
-                            actionsCell.insertBefore(previewBtn, downloadButton);
-                        } else {
-                            actionsCell.appendChild(previewBtn);
-                        }
-                    }
-                }
-            });
-        }
-        
-        // Function to check if file type is previewable
-        function isPreviewableFile(extension) {
-            const previewableTypes = [
-                'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', // Images
-                'pdf', // PDF documents
-                'txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js' // Text files
-            ];
-            
-            return previewableTypes.includes(extension.toLowerCase());
-        }
-        
-        // Function to show preview
-        function showPreview(filename) {
-            // Get all previewable files
-            previewableFiles = [];
-            document.querySelectorAll('.btn-preview').forEach(function(btn) {
-                const parentRow = btn.closest('.file-item');
-                if (parentRow) {
-                    const filenameCell = parentRow.querySelector('.file-name');
-                    if (filenameCell) {
-                        previewableFiles.push(filenameCell.textContent.trim());
-                    }
-                }
-            });
-            
-            // Find the index of the current file
-            currentPreviewIndex = previewableFiles.indexOf(filename);
-            
-            if (currentPreviewIndex === -1) {
-                console.error('File not found in previewable files list');
-                return;
-            }
-            
-            updatePreviewContent();
-            document.getElementById('previewModal').classList.add('active');
-        }
-        
-        // Function to update preview content
-        function updatePreviewContent() {
-            const filename = previewableFiles[currentPreviewIndex];
-            const previewContainer = document.getElementById('previewContainer');
-            const previewFilename = document.getElementById('previewFilename');
-            
-            // Show loading state
-            previewContainer.innerHTML = '<div class="preview-loading"><i class="fas fa-spinner fa-spin"></i> Загрузка...</div>';
-            previewFilename.textContent = filename;
-            
-            // Get file extension
-            const ext = filename.split('.').pop().toLowerCase();
-            
-            // Generate download URL
-            const fileUrl = `/${linkId}/download/${encodeURIComponent(filename)}`;
-            
-            // Show appropriate preview based on file type
-            if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext)) {
-                // Image preview
-                const img = document.createElement('img');
-                img.className = 'preview-image';
-                img.alt = filename;
-                
-                // Set loading handler
-                img.onload = function() {
-                    previewFilename.textContent = `${filename} (${img.naturalWidth}x${img.naturalHeight})`;
-                };
-                
-                img.onerror = function() {
-                    showPreviewError();
-                };
-                
-                img.src = fileUrl;
-                previewContainer.innerHTML = '';
-                previewContainer.appendChild(img);
-            } 
-            else if (ext === 'pdf') {
-                // PDF preview
-                const iframe = document.createElement('iframe');
-                iframe.className = 'preview-iframe';
-                iframe.src = fileUrl;
-                iframe.title = filename;
-                
-                previewContainer.innerHTML = '';
-                previewContainer.appendChild(iframe);
-            }
-            else if (['txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js'].includes(ext)) {
-                // Text file preview - fetch and display content
-                fetch(fileUrl)
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error('Network response was not ok');
-                        }
-                        return response.text();
-                    })
-                    .then(text => {
-                        const pre = document.createElement('pre');
-                        pre.className = 'preview-text';
-                        pre.textContent = text;
-                        
-                        previewContainer.innerHTML = '';
-                        previewContainer.appendChild(pre);
-                    })
-                    .catch(error => {
-                        console.error('Error fetching text file:', error);
-                        showPreviewError();
-                    });
-            }
-            else {
-                // Unsupported file type
-                showPreviewError();
-            }
-            
-            // Update navigation controls visibility
-            document.querySelector('.preview-controls').style.display = 
-                previewableFiles.length > 1 ? 'flex' : 'none';
-        }
-        
-        // Function to show preview error
-        function showPreviewError() {
-            const previewContainer = document.getElementById('previewContainer');
-            const filename = previewableFiles[currentPreviewIndex];
-            
-            previewContainer.innerHTML = `
-                <div class="preview-error">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <p>Не удалось показать предпросмотр для этого типа файлов</p>
-                    <a href="/${linkId}/download/${encodeURIComponent(filename)}" 
-                       class="btn btn-primary" target="_blank">
-                       Скачать файл
-                    </a>
-                </div>
-            `;
-        }
-        
-        // Event listeners for preview modal
-        document.getElementById('previewClose').addEventListener('click', function() {
-            document.getElementById('previewModal').classList.remove('active');
-        });
-        
-        document.getElementById('previewPrev').addEventListener('click', function() {
-            if (previewableFiles.length <= 1) return;
-            
-            currentPreviewIndex--;
-            if (currentPreviewIndex < 0) {
-                currentPreviewIndex = previewableFiles.length - 1;
-            }
-            
-            updatePreviewContent();
-        });
-        
-        document.getElementById('previewNext').addEventListener('click', function() {
-            if (previewableFiles.length <= 1) return;
-            
-            currentPreviewIndex++;
-            if (currentPreviewIndex >= previewableFiles.length) {
-                currentPreviewIndex = 0;
-            }
-            
-            updatePreviewContent();
-        });
-        
-        // Add keyboard navigation for preview
-        document.addEventListener('keydown', function(e) {
-            const previewModal = document.getElementById('previewModal');
-            if (!previewModal.classList.contains('active')) return;
-            
-            switch(e.key) {
-                case 'Escape':
-                    previewModal.classList.remove('active');
-                    break;
-                case 'ArrowLeft':
-                    document.getElementById('previewPrev').click();
-                    break;
-                case 'ArrowRight':
-                    document.getElementById('previewNext').click();
-                    break;
-            }
-        });
-        
-        // Initialize when DOM is loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            // ...existing code...
-            
-            // Initialize file previews
-            initPreviewButtons();
-            
-            // ...existing code...
         });
     </script>
 </body>

@@ -54,10 +54,11 @@ logger = logging.getLogger(__name__)
 # Пути к файлам и директориям
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
+STATIC_DIR = os.path.join(BASE_DIR, 'web', 'static')  # Добавляем путь к статическим файлам
 DB_PATH = os.path.join(BASE_DIR, 'bot_users.db')
 TEMP_STORAGE_DIR = os.path.join(BASE_DIR, 'temp_storage')
 
-app = Flask(__name__, template_folder=TEMPLATE_DIR)
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 
 # Загрузка конфигурации из .env файла
 # Общий лимит хранилища (по умолчанию 500 MB)
@@ -1311,6 +1312,7 @@ def download_file(link_id, filename):
             mime_type = extensions_mime.get(ext, 'application/octet-stream')
             
         try:
+            # ИСПРАВЛЕНО: Всегда используем as_attachment=True для принудительного скачивания
             return send_file(
                 file_path,
                 mimetype=mime_type,
