@@ -859,7 +859,6 @@ def temp_storage(link_id):
                                 used_percent=used_percent,
                                 theme=theme,
                                 expires_at=expires_at,
-                                remaining_time=remaining_time,
                                 allowed_extensions=ALLOWED_EXTENSIONS_STRING.split(','))
         except Exception as e:
             logger.error(f"Ошибка при рендеринге шаблона: {str(e)}")

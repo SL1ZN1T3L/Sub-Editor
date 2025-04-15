@@ -2,11 +2,16 @@
 <html lang="ru" data-theme="{{ theme }}">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="csrf-token" content="{{ csrf_token }}">
+    <meta name="theme-color" content="#4a6fa5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Временное хранилище</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/preview.css">
+    <script src="/static/js/preview.js" defer></script>
     <style>
         :root[data-theme="light"] {
             --bg-color: #ffffff;
@@ -379,16 +384,7 @@
         }
         
         .expires-at {
-            margin-top: 15px;
-            padding: 10px 15px;
-            background-color: var(--card-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 5px;
-            font-weight: bold;
-            text-align: center;
-            font-size: 16px;
-            box-shadow: 0 2px 4px var(--shadow-color);
-            color: var(--text-color);
+            display: none;
         }
         
         .page-title {
@@ -498,6 +494,466 @@
             cursor: pointer;
             z-index: -1;
         }
+
+        /* Стили для обратного отсчета времени */
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .countdown-timer {
+            padding: 10px 15px;
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            margin: 10px 0;
+            box-shadow: 0 2px 4px var(--shadow-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            gap: 5px;
+        }
+        
+        .countdown-timer.expiring {
+            color: var(--danger-color);
+            animation: pulse 1.5s infinite;
+        }
+        
+        .countdown-timer i {
+            margin-right: 5px;
+        }
+        
+        .countdown-unit {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0 5px;
+        }
+        
+        .countdown-value {
+            font-size: 1.2rem;
+            line-height: 1;
+            font-weight: 700;
+        }
+        
+        .countdown-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            opacity: 0.7;
+        }
+
+        /* Стили для кнопки "Поделиться" */
+        .share-button {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 20px;
+            cursor: pointer;
+            box-shadow: 0 4px 8px var(--shadow-color);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+        
+        .share-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px var(--shadow-color);
+        }
+        
+        .share-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .share-modal.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .share-modal-content {
+            background-color: var(--card-bg);
+            border-radius: 10px;
+            padding: 20px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 4px 8px var(--shadow-color);
+            position: relative;
+        }
+        
+        .share-modal-close {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--text-color);
+            opacity: 0.7;
+            transition: opacity 0.3s ease;
+        }
+        
+        .share-modal-close:hover {
+            opacity: 1;
+        }
+        
+        .share-link-input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin-bottom: 10px;
+            font-size: 1rem;
+        }
+        
+        .share-options {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+        }
+        
+        .share-option {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        
+        .share-option:hover {
+            transform: translateY(-3px);
+        }
+        
+        .share-option i {
+            font-size: 24px;
+            margin-bottom: 8px;
+            padding: 12px;
+            border-radius: 50%;
+            background-color: var(--bg-color);
+            color: var(--primary-color);
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .share-option span {
+            font-size: 12px;
+            color: var(--text-color);
+        }
+
+        /* Улучшенные стили для списка файлов */
+        .file-item {
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .file-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px var(--shadow-color);
+        }
+        
+        .file-type-icon {
+            font-size: 18px;
+            margin-right: 8px;
+            width: 20px;
+            text-align: center;
+            color: var(--primary-color);
+        }
+        
+        .file-name {
+            display: flex;
+            align-items: center;
+        }
+
+        /* Адаптивный дизайн для мобильных устройств */
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .page-title h1 {
+                font-size: 24px;
+            }
+            
+            .file-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .file-actions button {
+                margin: 5px 0;
+            }
+            
+            .share-modal-content {
+                width: 90%;
+                padding: 15px;
+            }
+            
+            .share-options {
+                flex-wrap: wrap;
+            }
+            
+            .share-option {
+                margin: 0 10px 10px;
+                width: 60px;
+            }
+            
+            .countdown-timer {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+            
+            .countdown-unit {
+                margin: 5px;
+            }
+            
+            .file-item td {
+                padding: 8px 5px;
+            }
+            
+            .btn {
+                padding: 8px;
+                font-size: 14px;
+            }
+            
+            .file-name {
+                max-width: 120px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            
+            .upload-progress {
+                padding: 8px;
+            }
+            
+            .file-upload-item {
+                padding: 8px;
+            }
+            
+            .drop-area {
+                padding: 15px;
+            }
+            
+            .share-button {
+                width: 40px;
+                height: 40px;
+                font-size: 16px;
+                bottom: 15px;
+                right: 15px;
+            }
+            
+            .storage-progress {
+                height: 15px;
+            }
+        }
+        
+        /* Улучшения для доступности */
+        .visually-hidden {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            margin: -1px;
+            padding: 0;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            border: 0;
+        }
+        
+        button, a {
+            transition: all 0.2s ease;
+        }
+        
+        button:focus, a:focus {
+            outline: 2px solid var(--primary-color);
+            outline-offset: 2px;
+        }
+        
+        .btn:active, .share-button:active {
+            transform: scale(0.95);
+        }
+
+        /* Preview modal styles */
+        .preview-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .preview-modal.active {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        .preview-content {
+            max-width: 90%;
+            max-height: 90%;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .preview-close {
+            position: absolute;
+            top: -40px;
+            right: 0;
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: white;
+            opacity: 0.7;
+            transition: opacity 0.3s ease;
+        }
+        
+        .preview-close:hover {
+            opacity: 1;
+        }
+        
+        .preview-image {
+            max-width: 100%;
+            max-height: 80vh;
+            object-fit: contain;
+            border-radius: 5px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        
+        .preview-iframe {
+            width: 80vw;
+            height: 80vh;
+            border: none;
+            border-radius: 5px;
+            background-color: white;
+        }
+        
+        .preview-filename {
+            position: absolute;
+            bottom: -30px;
+            color: white;
+            width: 100%;
+            text-align: center;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        
+        .preview-controls {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+        }
+        
+        .preview-control {
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+        
+        .preview-control:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .file-preview-button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: none;
+            border: none;
+            color: var(--primary-color);
+            font-size: 16px;
+            cursor: pointer;
+            padding: 2px;
+            margin-left: 5px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+        
+        .file-preview-button:hover {
+            background-color: rgba(74, 111, 165, 0.1);
+            color: var(--primary-color);
+        }
+        
+        .preview-loading {
+            color: white;
+            font-size: 18px;
+            text-align: center;
+        }
+        
+        .preview-error {
+            color: white;
+            font-size: 16px;
+            text-align: center;
+            max-width: 400px;
+        }
+        
+        .preview-error i {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #f14668;
+        }
+        
+        .preview-error p {
+            margin-bottom: 20px;
+        }
+        
+        .preview-text {
+            background: white;
+            color: #333;
+            padding: 20px;
+            border-radius: 5px;
+            max-width: 80vw;
+            max-height: 80vh;
+            overflow: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+            text-align: left;
+        }
     </style>
 </head>
 <body>
@@ -511,6 +967,27 @@
         <div class="page-title">
             <div class="rainbow-border"></div>
             <h1><i class="fas fa-cloud-upload-alt mr-2"></i> Временное хранилище</h1>
+        </div>
+        
+        <!-- Добавляем анимированный счетчик оставшегося времени -->
+        <div class="countdown-timer" id="countdownTimer">
+            <i class="far fa-clock"></i>
+            <div class="countdown-unit">
+                <span class="countdown-value" id="countDays">00</span>
+                <span class="countdown-label">дней</span>
+            </div>
+            <div class="countdown-unit">
+                <span class="countdown-value" id="countHours">00</span>
+                <span class="countdown-label">часов</span>
+            </div>
+            <div class="countdown-unit">
+                <span class="countdown-value" id="countMinutes">00</span>
+                <span class="countdown-label">минут</span>
+            </div>
+            <div class="countdown-unit">
+                <span class="countdown-value" id="countSeconds">00</span>
+                <span class="countdown-label">секунд</span>
+            </div>
         </div>
         
         <div class="card mb-4">
@@ -531,11 +1008,6 @@
                     <div class="storage-text">
                         Использовано: {{ '%.2f' % used_space }} MB из 500 MB
                     </div>
-                    {% if remaining_time %}
-                    <div class="expires-at">Срок действия до: {{ expires_at }} (осталось: {{ remaining_time }})</div>
-                    {% elif expires_at %}
-                    <div class="expires-at">Срок действия до: {{ expires_at }}</div>
-                    {% endif %}
                 </div>
                 <div class="mt-3 d-flex justify-content-end">
                     <button id="delete-storage" class="btn btn-danger">
@@ -602,16 +1074,22 @@
                             </thead>
                             <tbody>
                                 {% for file in files %}
-                                <tr>
+                                <tr class="file-item">
                                     <td>
                                         <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
                                     </td>
-                                    <td class="text-truncate" style="max-width: 200px;" title="{{ file.name|e }}">{{ file.name|e }}</td>
+                                    <td class="text-truncate file-name" style="max-width: 200px;" title="{{ file.name|e }}">{{ file.name|e }}</td>
                                     <td>{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
                                     <td>{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
                                     <td class="file-actions">
+                                        {% set ext = file.name.split('.')[-1]|lower %}
+                                        {% if ext in ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'pdf', 'txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js'] %}
+                                        <button class="btn btn-preview" onclick="showPreview('{{ file.name|e|escapejs }}')" title="Предпросмотр">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                        {% endif %}
                                         <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}" 
-                                           class="btn btn-download" title="Скачать">
+                                            class="btn btn-download" title="Скачать">
                                             <i class="fas fa-download"></i>
                                         </a>
                                         <button class="btn btn-delete" 
@@ -626,6 +1104,62 @@
                         </table>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Добавляем кнопку "Поделиться" -->
+    <button class="share-button" id="shareButton" title="Поделиться ссылкой">
+        <i class="fas fa-share-alt"></i>
+    </button>
+    
+    <!-- Добавляем модальное окно для поделиться -->
+    <div class="share-modal" id="shareModal">
+        <div class="share-modal-content">
+            <button class="share-modal-close" id="shareModalClose">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3>Поделиться хранилищем</h3>
+            <p>Скопируйте ссылку или поделитесь напрямую:</p>
+            <input type="text" class="share-link-input" id="shareLinkInput" readonly>
+            <button id="copyButton" class="btn btn-primary">Копировать ссылку</button>
+            
+            <div class="share-options">
+                <div class="share-option" id="shareWhatsApp">
+                    <i class="fab fa-whatsapp"></i>
+                    <span>WhatsApp</span>
+                </div>
+                <div class="share-option" id="shareTelegram">
+                    <i class="fab fa-telegram-plane"></i>
+                    <span>Telegram</span>
+                </div>
+                <div class="share-option" id="shareEmail">
+                    <i class="fas fa-envelope"></i>
+                    <span>Email</span>
+                </div>
+                <div class="share-option" id="shareQR">
+                    <i class="fas fa-qrcode"></i>
+                    <span>QR-код</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Добавляем модальное окно для предпросмотра -->
+    <div class="preview-modal" id="previewModal">
+        <div class="preview-content">
+            <button class="preview-close" id="previewClose">
+                <i class="fas fa-times"></i>
+            </button>
+            <div id="previewContainer"></div>
+            <div class="preview-filename" id="previewFilename"></div>
+            <div class="preview-controls">
+                <button class="preview-control" id="previewPrev">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <button class="preview-control" id="previewNext">
+                    <i class="fas fa-chevron-right"></i>
+                </button>
             </div>
         </div>
     </div>
@@ -1343,6 +1877,22 @@
             progressBar.style.setProperty('--bg-size', (100 * 100 / value) + '%');
             
             updateButtonsVisibility();
+            initCountdown();
+
+            // Добавляем иконки типов файлов к именам
+            document.querySelectorAll('.file-name').forEach(function(nameEl) {
+                const filename = nameEl.textContent.trim();
+                const iconClass = getFileTypeIcon(filename);
+                
+                // Создаем элемент для иконки
+                const iconEl = document.createElement('i');
+                iconEl.className = `fas ${iconClass} file-type-icon`;
+                
+                // Добавляем иконку перед текстом
+                nameEl.innerHTML = '';
+                nameEl.appendChild(iconEl);
+                nameEl.appendChild(document.createTextNode(filename));
+            });
         });
 
         // Функция для показа уведомлений
@@ -1481,6 +2031,470 @@
                 console.error('Ошибка:', error);
             }
         }
+
+        // Функция для инициализации обратного отсчета
+        function initCountdown() {
+            const countdownTimer = document.getElementById('countdownTimer');
+            const countDays = document.getElementById('countDays');
+            const countHours = document.getElementById('countHours');
+            const countMinutes = document.getElementById('countMinutes');
+            const countSeconds = document.getElementById('countSeconds');
+            
+            // Получаем дату истечения срока из переменной expires_at
+            const expiresAt = new Date("{{ expires_at }}");
+            
+            if (isNaN(expiresAt.getTime())) {
+                countdownTimer.style.display = 'none';
+                return;
+            }
+            
+            // Функция обновления таймера
+            function updateCountdown() {
+                const now = new Date();
+                const diff = expiresAt - now;
+                
+                if (diff <= 0) {
+                    // Срок истек
+                    countDays.textContent = '00';
+                    countHours.textContent = '00';
+                    countMinutes.textContent = '00';
+                    countSeconds.textContent = '00';
+                    countdownTimer.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Срок хранения истек';
+                    return;
+                }
+                
+                // Вычисляем оставшееся время
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+                
+                // Обновляем элементы
+                countDays.textContent = days.toString().padStart(2, '0');
+                countHours.textContent = hours.toString().padStart(2, '0');
+                countMinutes.textContent = minutes.toString().padStart(2, '0');
+                countSeconds.textContent = seconds.toString().padStart(2, '0');
+                
+                // Добавляем класс для анимации, если осталось меньше 24 часов
+                if (diff < 24 * 60 * 60 * 1000) {
+                    countdownTimer.classList.add('expiring');
+                } else {
+                    countdownTimer.classList.remove('expiring');
+                }
+            }
+            
+            // Обновляем сразу и настраиваем интервал
+            updateCountdown();
+            setInterval(updateCountdown, 1000);
+        }
+
+        // Обработчики для функции "Поделиться"
+        document.getElementById('shareButton').addEventListener('click', function() {
+            const shareModal = document.getElementById('shareModal');
+            const shareLinkInput = document.getElementById('shareLinkInput');
+            
+            // Установить текущий URL в поле ввода
+            shareLinkInput.value = window.location.href;
+            
+            // Показать модальное окно
+            shareModal.classList.add('active');
+        });
+        
+        document.getElementById('shareModalClose').addEventListener('click', function() {
+            document.getElementById('shareModal').classList.remove('active');
+        });
+        
+        document.getElementById('copyButton').addEventListener('click', function() {
+            const shareLinkInput = document.getElementById('shareLinkInput');
+            
+            // Выбрать текст
+            shareLinkInput.select();
+            shareLinkInput.setSelectionRange(0, 99999);
+            
+            // Скопировать текст
+            navigator.clipboard.writeText(shareLinkInput.value).then(function() {
+                showToast('Ссылка скопирована в буфер обмена', 'success');
+            }).catch(function() {
+                // Fallback для старых браузеров
+                document.execCommand('copy');
+                showToast('Ссылка скопирована в буфер обмена', 'success');
+            });
+        });
+        
+        // Обработчики для вариантов шеринга
+        document.getElementById('shareWhatsApp').addEventListener('click', function() {
+            const url = encodeURIComponent(window.location.href);
+            window.open(`https://wa.me/?text=${url}`, '_blank');
+        });
+        
+        document.getElementById('shareTelegram').addEventListener('click', function() {
+            const url = encodeURIComponent(window.location.href);
+            window.open(`https://t.me/share/url?url=${url}`, '_blank');
+        });
+        
+        document.getElementById('shareEmail').addEventListener('click', function() {
+            const url = encodeURIComponent(window.location.href);
+            const subject = encodeURIComponent('Ссылка на временное хранилище');
+            const body = encodeURIComponent(`Вот ссылка на временное хранилище: ${window.location.href}`);
+            window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
+        });
+        
+        document.getElementById('shareQR').addEventListener('click', function() {
+            const url = encodeURIComponent(window.location.href);
+            const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${url}`;
+            
+            // Открываем QR-код в новом окне
+            window.open(qrCodeUrl, '_blank');
+        });
+        
+        // Закрытие модальных окон при нажатии клавиши Escape
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                document.getElementById('shareModal').classList.remove('active');
+            }
+        });
+        
+        // Закрытие модальных окон при клике вне их содержимого
+        window.addEventListener('click', function(e) {
+            const shareModal = document.getElementById('shareModal');
+            
+            if (e.target === shareModal) {
+                shareModal.classList.remove('active');
+            }
+        });
+
+        // Функция для определения иконки типа файла
+        function getFileTypeIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            
+            const iconMap = {
+                // Изображения
+                'jpg': 'fa-file-image',
+                'jpeg': 'fa-file-image',
+                'png': 'fa-file-image',
+                'gif': 'fa-file-image',
+                'svg': 'fa-file-image',
+                'webp': 'fa-file-image',
+                
+                // Документы
+                'pdf': 'fa-file-pdf',
+                'doc': 'fa-file-word',
+                'docx': 'fa-file-word',
+                'xls': 'fa-file-excel',
+                'xlsx': 'fa-file-excel',
+                'ppt': 'fa-file-powerpoint',
+                'pptx': 'fa-file-powerpoint',
+                
+                // Текстовые файлы
+                'txt': 'fa-file-alt',
+                'md': 'fa-file-alt',
+                'csv': 'fa-file-csv',
+                'json': 'fa-file-code',
+                'xml': 'fa-file-code',
+                'html': 'fa-file-code',
+                'css': 'fa-file-code',
+                'js': 'fa-file-code',
+                
+                // Архивы
+                'zip': 'fa-file-archive',
+                'rar': 'fa-file-archive',
+                '7z': 'fa-file-archive',
+                'tar': 'fa-file-archive',
+                'gz': 'fa-file-archive',
+                
+                // Аудио
+                'mp3': 'fa-file-audio',
+                'wav': 'fa-file-audio',
+                'ogg': 'fa-file-audio',
+                
+                // Видео
+                'mp4': 'fa-file-video',
+                'avi': 'fa-file-video',
+                'mov': 'fa-file-video',
+                'wmv': 'fa-file-video',
+                'mkv': 'fa-file-video',
+                
+                // По умолчанию
+                'default': 'fa-file'
+            };
+            
+            return iconMap[ext] || iconMap['default'];
+        }
+        
+        // Обновляем отображение списка файлов после загрузки страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            // Добавляем иконки типов файлов к именам
+            document.querySelectorAll('.file-name').forEach(function(nameEl) {
+                const filename = nameEl.textContent.trim();
+                const iconClass = getFileTypeIcon(filename);
+                
+                // Создаем элемент для иконки
+                const iconEl = document.createElement('i');
+                iconEl.className = `fas ${iconClass} file-type-icon`;
+                
+                // Добавляем иконку перед текстом
+                nameEl.innerHTML = '';
+                nameEl.appendChild(iconEl);
+                nameEl.appendChild(document.createTextNode(filename));
+            });
+        });
+
+        // Variables for file preview
+        let previewableFiles = [];
+        let currentPreviewIndex = 0;
+        
+        // Function to initialize preview buttons
+        function initPreviewButtons() {
+            document.querySelectorAll('.file-item').forEach(function(row) {
+                const filenameElement = row.querySelector('.file-name');
+                if (!filenameElement) return;
+                
+                const filename = filenameElement.textContent.trim();
+                const ext = filename.split('.').pop().toLowerCase();
+                
+                // Check if this file type can be previewed
+                if (isPreviewableFile(ext)) {
+                    // Create and append preview button if it doesn't exist
+                    if (!filenameElement.querySelector('.file-preview-button')) {
+                        const previewBtn = document.createElement('button');
+                        previewBtn.className = 'file-preview-button';
+                        previewBtn.title = 'Предпросмотр';
+                        previewBtn.innerHTML = '<i class="fas fa-eye"></i>';
+                        previewBtn.dataset.filename = filename;
+                        
+                        previewBtn.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            showPreview(filename);
+                        });
+                        
+                        filenameElement.appendChild(previewBtn);
+                    }
+                }
+            });
+            
+            // Add preview button to actions column as well
+            document.querySelectorAll('.file-item').forEach(function(row) {
+                const actionsCell = row.querySelector('.file-actions');
+                const filenameElement = row.querySelector('.file-name');
+                if (!actionsCell || !filenameElement) return;
+                
+                const filename = filenameElement.textContent.trim();
+                const ext = filename.split('.').pop().toLowerCase();
+                
+                if (isPreviewableFile(ext)) {
+                    // Add preview button in actions column if it doesn't exist
+                    if (!actionsCell.querySelector('.btn-preview')) {
+                        const previewBtn = document.createElement('button');
+                        previewBtn.className = 'btn btn-preview';
+                        previewBtn.title = 'Предпросмотр';
+                        previewBtn.innerHTML = '<i class="fas fa-eye"></i>';
+                        previewBtn.dataset.filename = filename;
+                        
+                        previewBtn.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            showPreview(filename);
+                        });
+                        
+                        // Insert before download button
+                        const downloadButton = actionsCell.querySelector('.btn-download');
+                        if (downloadButton) {
+                            actionsCell.insertBefore(previewBtn, downloadButton);
+                        } else {
+                            actionsCell.appendChild(previewBtn);
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Function to check if file type is previewable
+        function isPreviewableFile(extension) {
+            const previewableTypes = [
+                'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', // Images
+                'pdf', // PDF documents
+                'txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js' // Text files
+            ];
+            
+            return previewableTypes.includes(extension.toLowerCase());
+        }
+        
+        // Function to show preview
+        function showPreview(filename) {
+            // Get all previewable files
+            previewableFiles = [];
+            document.querySelectorAll('.btn-preview').forEach(function(btn) {
+                const parentRow = btn.closest('.file-item');
+                if (parentRow) {
+                    const filenameCell = parentRow.querySelector('.file-name');
+                    if (filenameCell) {
+                        previewableFiles.push(filenameCell.textContent.trim());
+                    }
+                }
+            });
+            
+            // Find the index of the current file
+            currentPreviewIndex = previewableFiles.indexOf(filename);
+            
+            if (currentPreviewIndex === -1) {
+                console.error('File not found in previewable files list');
+                return;
+            }
+            
+            updatePreviewContent();
+            document.getElementById('previewModal').classList.add('active');
+        }
+        
+        // Function to update preview content
+        function updatePreviewContent() {
+            const filename = previewableFiles[currentPreviewIndex];
+            const previewContainer = document.getElementById('previewContainer');
+            const previewFilename = document.getElementById('previewFilename');
+            
+            // Show loading state
+            previewContainer.innerHTML = '<div class="preview-loading"><i class="fas fa-spinner fa-spin"></i> Загрузка...</div>';
+            previewFilename.textContent = filename;
+            
+            // Get file extension
+            const ext = filename.split('.').pop().toLowerCase();
+            
+            // Generate download URL
+            const fileUrl = `/${linkId}/download/${encodeURIComponent(filename)}`;
+            
+            // Show appropriate preview based on file type
+            if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext)) {
+                // Image preview
+                const img = document.createElement('img');
+                img.className = 'preview-image';
+                img.alt = filename;
+                
+                // Set loading handler
+                img.onload = function() {
+                    previewFilename.textContent = `${filename} (${img.naturalWidth}x${img.naturalHeight})`;
+                };
+                
+                img.onerror = function() {
+                    showPreviewError();
+                };
+                
+                img.src = fileUrl;
+                previewContainer.innerHTML = '';
+                previewContainer.appendChild(img);
+            } 
+            else if (ext === 'pdf') {
+                // PDF preview
+                const iframe = document.createElement('iframe');
+                iframe.className = 'preview-iframe';
+                iframe.src = fileUrl;
+                iframe.title = filename;
+                
+                previewContainer.innerHTML = '';
+                previewContainer.appendChild(iframe);
+            }
+            else if (['txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js'].includes(ext)) {
+                // Text file preview - fetch and display content
+                fetch(fileUrl)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok');
+                        }
+                        return response.text();
+                    })
+                    .then(text => {
+                        const pre = document.createElement('pre');
+                        pre.className = 'preview-text';
+                        pre.textContent = text;
+                        
+                        previewContainer.innerHTML = '';
+                        previewContainer.appendChild(pre);
+                    })
+                    .catch(error => {
+                        console.error('Error fetching text file:', error);
+                        showPreviewError();
+                    });
+            }
+            else {
+                // Unsupported file type
+                showPreviewError();
+            }
+            
+            // Update navigation controls visibility
+            document.querySelector('.preview-controls').style.display = 
+                previewableFiles.length > 1 ? 'flex' : 'none';
+        }
+        
+        // Function to show preview error
+        function showPreviewError() {
+            const previewContainer = document.getElementById('previewContainer');
+            const filename = previewableFiles[currentPreviewIndex];
+            
+            previewContainer.innerHTML = `
+                <div class="preview-error">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>Не удалось показать предпросмотр для этого типа файлов</p>
+                    <a href="/${linkId}/download/${encodeURIComponent(filename)}" 
+                       class="btn btn-primary" target="_blank">
+                       Скачать файл
+                    </a>
+                </div>
+            `;
+        }
+        
+        // Event listeners for preview modal
+        document.getElementById('previewClose').addEventListener('click', function() {
+            document.getElementById('previewModal').classList.remove('active');
+        });
+        
+        document.getElementById('previewPrev').addEventListener('click', function() {
+            if (previewableFiles.length <= 1) return;
+            
+            currentPreviewIndex--;
+            if (currentPreviewIndex < 0) {
+                currentPreviewIndex = previewableFiles.length - 1;
+            }
+            
+            updatePreviewContent();
+        });
+        
+        document.getElementById('previewNext').addEventListener('click', function() {
+            if (previewableFiles.length <= 1) return;
+            
+            currentPreviewIndex++;
+            if (currentPreviewIndex >= previewableFiles.length) {
+                currentPreviewIndex = 0;
+            }
+            
+            updatePreviewContent();
+        });
+        
+        // Add keyboard navigation for preview
+        document.addEventListener('keydown', function(e) {
+            const previewModal = document.getElementById('previewModal');
+            if (!previewModal.classList.contains('active')) return;
+            
+            switch(e.key) {
+                case 'Escape':
+                    previewModal.classList.remove('active');
+                    break;
+                case 'ArrowLeft':
+                    document.getElementById('previewPrev').click();
+                    break;
+                case 'ArrowRight':
+                    document.getElementById('previewNext').click();
+                    break;
+            }
+        });
+        
+        // Initialize when DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            // ...existing code...
+            
+            // Initialize file previews
+            initPreviewButtons();
+            
+            // ...existing code...
+        });
     </script>
 </body>
-</html> 
+</html>
