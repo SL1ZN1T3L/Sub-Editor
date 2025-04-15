@@ -169,6 +169,32 @@
     margin-bottom: 20px;
 }
 
+/* Additional styles for Office and archive file previews */
+.preview-error i.fa-file-word {
+    color: #2b579a;
+}
+
+.preview-error i.fa-file-excel {
+    color: #217346;
+}
+
+.preview-error i.fa-file-powerpoint {
+    color: #d24726;
+}
+
+.preview-error i.fa-file-archive {
+    color: #f7b731;
+}
+
+.preview-error i.fa-file-database {
+    color: #a4373a;
+}
+
+.preview-error i.fa-file-alt,
+.preview-error i.fa-file-document {
+    color: #5f6368;
+}
+
 /* Text file preview */
 .preview-text {
     background: white;
@@ -178,10 +204,20 @@
     max-width: 80vw;
     max-height: 80vh;
     overflow: auto;
-    font-family: monospace;
+    font-family: "Consolas", "Monaco", "Lucida Console", monospace;
     white-space: pre-wrap;
     text-align: left;
+    line-height: 1.5;
+    font-size: 14px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
 }
+
+/* Syntax highlighting styles */
+.preview-text .keyword { color: #0000ff; }
+.preview-text .string { color: #a31515; }
+.preview-text .comment { color: #008000; }
+.preview-text .number { color: #09885a; }
+.preview-text .operator { color: #000000; }
 
 /* Responsive styles */
 @media (max-width: 768px) {

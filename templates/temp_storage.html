@@ -1092,11 +1092,9 @@
                                     <td style="padding-left: 15px;">{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
                                     <td class="file-actions" style="padding-left: 15px;">
                                         {% set ext = file.name.split('.')[-1]|lower %}
-                                        {% if ext in ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'pdf', 'txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js'] %}
                                         <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
                                             <i class="fas fa-eye"></i>
                                         </button>
-                                        {% endif %}
                                         <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}" 
                                             class="btn btn-download" title="Скачать" download>
                                             <i class="fas fa-download"></i>

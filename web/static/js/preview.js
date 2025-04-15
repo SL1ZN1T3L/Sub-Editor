@@ -138,9 +138,30 @@ class FilePreviewManager {
     // Check if file type is previewable
     isPreviewableFile(extension) {
         const previewableTypes = [
-            'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', // Images
-            'pdf', // PDF documents
-            'txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js' // Text files
+            // Изображения
+            'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
+            
+            // PDF документы
+            'pdf',
+            
+            // Microsoft Office документы
+            'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm',     // Word
+            'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm',     // Excel
+            'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm',     // PowerPoint
+            'vsd', 'vsdx', 'vdw', 'vss', 'vssx',              // Visio
+            'mdb', 'accdb', 'accde', 'accdt',                 // Access
+            'rtf', 'odt', 'ods', 'odp',                       // Другие офисные форматы
+            
+            // Текстовые файлы и код
+            'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
+            'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
+            'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
+            
+            // Архивы (для показа структуры)
+            'zip', 'rar', '7z', 'tar', 'gz', 'bz2',
+            
+            // Исходные файлы и документация
+            'tex', 'bib', 'log', 'diff', 'patch'
         ];
         
         return previewableTypes.includes(extension.toLowerCase());
@@ -177,8 +198,15 @@ class FilePreviewManager {
         // Generate download URL
         const fileUrl = `/${this.linkId}/download/${encodeURIComponent(filename)}`;
         
+        // Группируем расширения по типам для определения способа предпросмотра
+        const imageTypes = ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif'];
+        const textTypes = ['txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js', 'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts', 'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1', 'tex', 'bib', 'log', 'diff', 'patch'];
+        const pdfTypes = ['pdf'];
+        const officeTypes = ['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'vsd', 'vsdx', 'vdw', 'vss', 'vssx', 'mdb', 'accdb', 'accde', 'accdt', 'rtf', 'odt', 'ods', 'odp'];
+        const archiveTypes = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2'];
+        
         // Show appropriate preview based on file type
-        if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(ext)) {
+        if (imageTypes.includes(ext)) {
             // Image preview
             const img = document.createElement('img');
             img.className = 'preview-image';
@@ -197,7 +225,7 @@ class FilePreviewManager {
             this.previewContainer.innerHTML = '';
             this.previewContainer.appendChild(img);
         } 
-        else if (ext === 'pdf') {
+        else if (pdfTypes.includes(ext)) {
             // PDF preview
             const iframe = document.createElement('iframe');
             iframe.className = 'preview-iframe';
@@ -207,7 +235,7 @@ class FilePreviewManager {
             this.previewContainer.innerHTML = '';
             this.previewContainer.appendChild(iframe);
         }
-        else if (['txt', 'md', 'csv', 'json', 'xml', 'html', 'css', 'js'].includes(ext)) {
+        else if (textTypes.includes(ext)) {
             // Text file preview - fetch and display content
             fetch(fileUrl)
                 .then(response => {
@@ -229,6 +257,30 @@ class FilePreviewManager {
                     this.showPreviewError();
                 });
         }
+        else if (officeTypes.includes(ext)) {
+            // Office документы: предлагаем скачать для просмотра
+            this.previewContainer.innerHTML = `
+                <div class="preview-error">
+                    <i class="fas fa-file-${this.getOfficeIcon(ext)}"></i>
+                    <p>Для предпросмотра документов Office требуется внешнее приложение</p>
+                    <a href="${fileUrl}" class="btn btn-primary" target="_blank" download>
+                        Скачать файл
+                    </a>
+                </div>
+            `;
+        }
+        else if (archiveTypes.includes(ext)) {
+            // Архивы: показываем иконку архива
+            this.previewContainer.innerHTML = `
+                <div class="preview-error">
+                    <i class="fas fa-file-archive"></i>
+                    <p>Для просмотра содержимого архива скачайте его</p>
+                    <a href="${fileUrl}" class="btn btn-primary" target="_blank" download>
+                        Скачать архив
+                    </a>
+                </div>
+            `;
+        }
         else {
             // Unsupported file type
             this.showPreviewError();
@@ -237,6 +289,23 @@ class FilePreviewManager {
         // Update navigation controls visibility
         document.querySelector('.preview-controls').style.display = 
             this.previewableFiles.length > 1 ? 'flex' : 'none';
+    }
+    
+    // Helper to determine the right Office icon
+    getOfficeIcon(ext) {
+        if (['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'rtf', 'odt'].includes(ext)) {
+            return 'word';
+        } else if (['xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ods'].includes(ext)) {
+            return 'excel';
+        } else if (['ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'odp'].includes(ext)) {
+            return 'powerpoint';
+        } else if (['vsd', 'vsdx', 'vdw', 'vss', 'vssx'].includes(ext)) {
+            return 'alt';
+        } else if (['mdb', 'accdb', 'accde', 'accdt'].includes(ext)) {
+            return 'database';
+        } else {
+            return 'document';
+        }
     }
     
     // Show error state in preview
@@ -263,6 +332,7 @@ class FilePreviewManager {
         if (this.currentIndex < 0) {
             this.currentIndex = this.previewableFiles.length - 1;
         }
+        
         this.updatePreviewContent();
     }
     
@@ -274,6 +344,7 @@ class FilePreviewManager {
         if (this.currentIndex >= this.previewableFiles.length) {
             this.currentIndex = 0;
         }
+        
         this.updatePreviewContent();
     }
     
