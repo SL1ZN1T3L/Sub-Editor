@@ -55,6 +55,13 @@
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
 }
 
+.preview-image.screenshot {
+    max-width: 95%;
+    max-height: 95vh;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
 .preview-iframe {
     width: 80vw;
     height: 80vh;
@@ -169,7 +176,6 @@
     margin-bottom: 20px;
 }
 
-/* Additional styles for Office and archive file previews */
 .preview-error i.fa-file-word {
     color: #2b579a;
 }
@@ -195,6 +201,47 @@
     color: #5f6368;
 }
 
+.preview-error .pdf-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 20px;
+}
+
+.preview-error .pdf-actions .btn {
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s;
+}
+
+.preview-error .pdf-actions .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.preview-error .pdf-actions .btn-primary {
+    background-color: #4a6fa5;
+    color: white;
+}
+
+.preview-error .pdf-actions .btn-primary:hover {
+    background-color: #3b5a84;
+}
+
+.preview-error .pdf-actions .btn-success {
+    background-color: #28a745;
+    color: white;
+}
+
+.preview-error .pdf-actions .btn-success:hover {
+    background-color: #218838;
+}
+
 /* Text file preview */
 .preview-text {
     background: white;
@@ -218,6 +265,326 @@
 .preview-text .comment { color: #008000; }
 .preview-text .number { color: #09885a; }
 .preview-text .operator { color: #000000; }
+
+/* Стили для предпросмотра Office документов */
+.preview-document {
+    background-color: white;
+    width: 80vw;
+    max-width: 1000px;
+    max-height: 80vh;
+    overflow: auto;
+    border-radius: 5px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+}
+
+/* Стили для Word */
+.preview-word .word-content {
+    padding: 40px;
+    font-family: 'Calibri', 'Arial', sans-serif;
+    line-height: 1.5;
+    color: #333;
+}
+
+/* Стили для Excel */
+.excel-tabs {
+    display: flex;
+    overflow-x: auto;
+    background-color: #f5f5f5;
+    border-bottom: 1px solid #ddd;
+}
+
+.excel-tab {
+    padding: 8px 16px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    outline: none;
+    position: relative;
+}
+
+.excel-tab.active {
+    font-weight: bold;
+    color: #2b579a;
+}
+
+.excel-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background-color: #2b579a;
+}
+
+.excel-sheet {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.excel-sheet th, .excel-sheet td {
+    border: 1px solid #ddd;
+    padding: 6px;
+    text-align: left;
+    font-size: 14px;
+}
+
+.excel-sheet th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+
+/* Стили для PowerPoint */
+.pptx-container {
+    width: 100%;
+    background-color: #212121;
+    text-align: center;
+    padding: 20px;
+}
+
+.pptx-slide {
+    margin: 0 auto;
+    max-width: 100%;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.pptx-navigation {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background-color: #f5f5f5;
+    border-top: 1px solid #ddd;
+}
+
+.pptx-nav-btn {
+    background-color: #d24726;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.pptx-nav-btn:hover {
+    background-color: #c2381e;
+}
+
+.pptx-slide-number {
+    font-size: 14px;
+    color: #666;
+}
+
+/* Улучшенные стили для PDF */
+.preview-pdf {
+    width: 85vw;
+    height: 85vh;
+    max-width: 1200px;
+    display: flex;
+    flex-direction: column;
+}
+
+.pdf-canvas {
+    max-width: 100%;
+    margin: 0 auto;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+.pdf-navigation {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
+    background-color: #f5f5f5;
+    border-top: 1px solid #ddd;
+    margin-top: auto;
+}
+
+.pdf-prev-btn, .pdf-next-btn {
+    background-color: #4a6fa5;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.pdf-prev-btn:hover, .pdf-next-btn:hover {
+    background-color: #3b5a84;
+}
+
+.pdf-page-info {
+    font-size: 14px;
+    color: #666;
+}
+
+.pdf-download-btn {
+    background-color: #28a745;
+    color: white;
+    text-decoration: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.pdf-download-btn:hover {
+    background-color: #218838;
+    color: white;
+}
+
+/* Стили для Office Viewer */
+.office-viewer-iframe {
+    width: 100%;
+    height: 600px;
+    border: none;
+    display: block;
+}
+
+.office-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 20px;
+}
+
+.office-actions .btn {
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s;
+}
+
+.office-actions .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.office-actions .btn-primary {
+    background-color: #4a6fa5;
+    color: white;
+}
+
+.office-actions .btn-primary:hover {
+    background-color: #3b5a84;
+}
+
+.office-actions .btn-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.office-actions .btn-secondary:hover {
+    background-color: #5a6268;
+}
+
+/* Стили для предпросмотра Office документов */
+.office-preview-container {
+    display: flex;
+    padding: 30px;
+    background-color: white;
+    width: 100%;
+    height: 100%;
+    border-radius: 5px;
+    align-items: center;
+    flex-direction: column;
+    text-align: center;
+}
+
+.office-preview-icon {
+    margin-bottom: 20px;
+}
+
+.office-preview-icon i.fa-file-word {
+    color: #2b579a;
+}
+
+.office-preview-icon i.fa-file-excel {
+    color: #217346;
+}
+
+.office-preview-icon i.fa-file-powerpoint {
+    color: #d24726;
+}
+
+.office-preview-info h3 {
+    margin-bottom: 15px;
+    color: #333;
+    font-size: 24px;
+}
+
+.office-preview-info p {
+    margin-bottom: 20px;
+    color: #666;
+}
+
+.office-preview-actions {
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+    margin-bottom: 25px;
+}
+
+.office-preview-actions .btn {
+    padding: 10px 20px;
+    border-radius: 4px;
+    font-size: 16px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s;
+}
+
+.office-preview-actions .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.office-preview-actions .btn-primary {
+    background-color: #4a6fa5;
+    color: white;
+}
+
+.office-preview-actions .btn-primary:hover {
+    background-color: #3b5a84;
+}
+
+.office-preview-actions .btn-secondary {
+    background-color: #6c757d;
+    color: white;
+}
+
+.office-preview-actions .btn-secondary:hover {
+    background-color: #5a6268;
+}
+
+.office-preview-message {
+    max-width: 500px;
+    margin: 0 auto;
+    padding: 15px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    border-left: 5px solid #4a6fa5;
+}
+
+.office-preview-message p {
+    margin: 0;
+    color: #555;
+    font-size: 14px;
+    line-height: 1.5;
+}
 
 /* Responsive styles */
 @media (max-width: 768px) {

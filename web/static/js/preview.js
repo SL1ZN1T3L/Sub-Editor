@@ -205,6 +205,11 @@ class FilePreviewManager {
         const officeTypes = ['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'vsd', 'vsdx', 'vdw', 'vss', 'vssx', 'mdb', 'accdb', 'accde', 'accdt', 'rtf', 'odt', 'ods', 'odp'];
         const archiveTypes = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2'];
         
+        // Office документы по типам
+        const wordTypes = ['doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'rtf', 'odt'];
+        const excelTypes = ['xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ods'];
+        const pptTypes = ['ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'odp'];
+        
         // Show appropriate preview based on file type
         if (imageTypes.includes(ext)) {
             // Image preview
@@ -226,14 +231,8 @@ class FilePreviewManager {
             this.previewContainer.appendChild(img);
         } 
         else if (pdfTypes.includes(ext)) {
-            // PDF preview
-            const iframe = document.createElement('iframe');
-            iframe.className = 'preview-iframe';
-            iframe.src = fileUrl;
-            iframe.title = filename;
-            
-            this.previewContainer.innerHTML = '';
-            this.previewContainer.appendChild(iframe);
+            // Улучшенный предпросмотр PDF
+            this.previewPdf(fileUrl, filename);
         }
         else if (textTypes.includes(ext)) {
             // Text file preview - fetch and display content
@@ -258,16 +257,31 @@ class FilePreviewManager {
                 });
         }
         else if (officeTypes.includes(ext)) {
-            // Office документы: предлагаем скачать для просмотра
-            this.previewContainer.innerHTML = `
-                <div class="preview-error">
-                    <i class="fas fa-file-${this.getOfficeIcon(ext)}"></i>
-                    <p>Для предпросмотра документов Office требуется внешнее приложение</p>
-                    <a href="${fileUrl}" class="btn btn-primary" target="_blank" download>
-                        Скачать файл
-                    </a>
-                </div>
-            `;
+            // Обработка Office документов
+            if (wordTypes.includes(ext)) {
+                // Word документы
+                this.previewWord(fileUrl, filename);
+            } 
+            else if (excelTypes.includes(ext)) {
+                // Excel документы
+                this.previewExcel(fileUrl, filename);
+            } 
+            else if (pptTypes.includes(ext)) {
+                // PowerPoint документы
+                this.previewPowerPoint(fileUrl, filename);
+            } 
+            else {
+                // Другие офисные форматы показываем как раньше через ошибку с иконкой
+                this.previewContainer.innerHTML = `
+                    <div class="preview-error">
+                        <i class="fas fa-file-${this.getOfficeIcon(ext)}"></i>
+                        <p>Для предпросмотра данного формата документа требуется внешнее приложение</p>
+                        <a href="${fileUrl}" class="btn btn-primary" target="_blank" download>
+                            Скачать файл
+                        </a>
+                    </div>
+                `;
+            }
         }
         else if (archiveTypes.includes(ext)) {
             // Архивы: показываем иконку архива
@@ -282,13 +296,266 @@ class FilePreviewManager {
             `;
         }
         else {
-            // Unsupported file type
-            this.showPreviewError();
+            // Unsupported file type - попытка отобразить как изображение скриншота или другой файл
+            // Скриншоты из Windows могут иметь расширение файла .png, но файлы в названии могут содержать { }
+            if (filename.includes('{') && filename.includes('}')) {
+                const img = document.createElement('img');
+                img.className = 'preview-image';
+                img.alt = filename;
+                
+                img.onload = () => {
+                    this.previewFilename.textContent = `${filename} (${img.naturalWidth}x${img.naturalHeight})`;
+                };
+                
+                img.onerror = () => {
+                    this.showPreviewError();
+                };
+                
+                img.src = fileUrl;
+                this.previewContainer.innerHTML = '';
+                this.previewContainer.appendChild(img);
+            } else {
+                this.showPreviewError();
+            }
         }
         
         // Update navigation controls visibility
         document.querySelector('.preview-controls').style.display = 
             this.previewableFiles.length > 1 ? 'flex' : 'none';
+    }
+    
+    // Специальный метод для правильного отображения PDF файлов
+    previewPdf(fileUrl, filename) {
+        // Создаем контейнер для PDF
+        const pdfContainer = document.createElement('div');
+        pdfContainer.className = 'preview-document preview-pdf';
+        
+        // Показываем загрузку
+        pdfContainer.innerHTML = '<div class="preview-loading"><i class="fas fa-spinner fa-spin"></i> Загрузка PDF...</div>';
+        this.previewContainer.innerHTML = '';
+        this.previewContainer.appendChild(pdfContainer);
+
+        // Используем PDF.js для отображения PDF файлов
+        // Ссылка на библиотеку PDF.js
+        const pdfJsUrl = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js';
+        
+        // Функция для загрузки PDF.js, если она еще не загружена
+        const loadPdfJs = () => {
+            return new Promise((resolve, reject) => {
+                if (window.pdfjsLib) {
+                    resolve(window.pdfjsLib);
+                    return;
+                }
+                
+                const script = document.createElement('script');
+                script.src = pdfJsUrl;
+                script.onload = () => {
+                    // Также загружаем worker для PDF.js
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 
+                        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+                    resolve(window.pdfjsLib);
+                };
+                script.onerror = () => reject(new Error('Не удалось загрузить PDF.js'));
+                document.head.appendChild(script);
+            });
+        };
+
+        // Загружаем PDF с использованием PDF.js
+        loadPdfJs()
+            .then(pdfjs => {
+                return pdfjs.getDocument(fileUrl).promise;
+            })
+            .then(pdfDoc => {
+                // Создаем элементы для просмотра PDF
+                pdfContainer.innerHTML = '';
+                const canvas = document.createElement('canvas');
+                canvas.className = 'pdf-canvas';
+                pdfContainer.appendChild(canvas);
+                
+                // Создаем элементы навигации
+                const navigation = document.createElement('div');
+                navigation.className = 'pdf-navigation';
+                navigation.innerHTML = `
+                    <button class="pdf-prev-btn"><i class="fas fa-chevron-left"></i> Предыдущая</button>
+                    <span class="pdf-page-info">Страница <span class="pdf-page-num">1</span> из ${pdfDoc.numPages}</span>
+                    <button class="pdf-next-btn">Следующая <i class="fas fa-chevron-right"></i></button>
+                    <a href="${fileUrl}" class="pdf-download-btn" download="${filename}">
+                        <i class="fas fa-download"></i> Скачать
+                    </a>
+                `;
+                pdfContainer.appendChild(navigation);
+                
+                const ctx = canvas.getContext('2d');
+                let currentPage = 1;
+                
+                // Функция для рендеринга страницы PDF
+                const renderPage = (pageNumber) => {
+                    pdfDoc.getPage(pageNumber).then(page => {
+                        const viewport = page.getViewport({scale: 1.5});
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        
+                        const renderContext = {
+                            canvasContext: ctx,
+                            viewport: viewport
+                        };
+                        
+                        page.render(renderContext);
+                        
+                        // Обновляем номер страницы
+                        pdfContainer.querySelector('.pdf-page-num').textContent = pageNumber;
+                    });
+                };
+                
+                // Отрисовываем первую страницу
+                renderPage(currentPage);
+                
+                // Добавляем обработчики для кнопок навигации
+                pdfContainer.querySelector('.pdf-prev-btn').addEventListener('click', () => {
+                    if (currentPage <= 1) return;
+                    currentPage--;
+                    renderPage(currentPage);
+                });
+                
+                pdfContainer.querySelector('.pdf-next-btn').addEventListener('click', () => {
+                    if (currentPage >= pdfDoc.numPages) return;
+                    currentPage++;
+                    renderPage(currentPage);
+                });
+            })
+            .catch(error => {
+                console.error('Ошибка при загрузке PDF:', error);
+                this.fallbackPdfPreview(pdfContainer, fileUrl, filename);
+            });
+    }
+
+    // Метод для предпросмотра Word документов
+    previewWord(fileUrl, filename) {
+        // Создаем контейнер для содержимого Word
+        const wordContainer = document.createElement('div');
+        wordContainer.className = 'preview-document preview-word';
+        
+        // Показываем информацию о документе с вариантами действий
+        wordContainer.innerHTML = `
+            <div class="office-preview-container">
+                <div class="office-preview-icon">
+                    <i class="fas fa-file-word fa-4x"></i>
+                </div>
+                <div class="office-preview-info">
+                    <h3>Документ Microsoft Word</h3>
+                    <p>Файл: ${filename}</p>
+                    <div class="office-preview-actions">
+                        <a href="${fileUrl}" class="btn btn-primary" download="${filename}">
+                            <i class="fas fa-download"></i> Скачать документ
+                        </a>
+                        <a href="${fileUrl}?download=false" class="btn btn-secondary" target="_blank">
+                            <i class="fas fa-external-link-alt"></i> Открыть в новой вкладке
+                        </a>
+                    </div>
+                    <div class="office-preview-message">
+                        <p>Для просмотра содержимого документа Word, пожалуйста, скачайте файл и откройте его в Microsoft Word или другом совместимом приложении.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        this.previewContainer.innerHTML = '';
+        this.previewContainer.appendChild(wordContainer);
+    }
+
+    // Метод для предпросмотра Excel документов
+    previewExcel(fileUrl, filename) {
+        // Создаем контейнер для содержимого Excel
+        const excelContainer = document.createElement('div');
+        excelContainer.className = 'preview-document preview-excel';
+        
+        // Показываем информацию о таблице с вариантами действий
+        excelContainer.innerHTML = `
+            <div class="office-preview-container">
+                <div class="office-preview-icon">
+                    <i class="fas fa-file-excel fa-4x"></i>
+                </div>
+                <div class="office-preview-info">
+                    <h3>Таблица Microsoft Excel</h3>
+                    <p>Файл: ${filename}</p>
+                    <div class="office-preview-actions">
+                        <a href="${fileUrl}" class="btn btn-primary" download="${filename}">
+                            <i class="fas fa-download"></i> Скачать таблицу
+                        </a>
+                        <a href="${fileUrl}?download=false" class="btn btn-secondary" target="_blank">
+                            <i class="fas fa-external-link-alt"></i> Открыть в новой вкладке
+                        </a>
+                    </div>
+                    <div class="office-preview-message">
+                        <p>Для просмотра содержимого таблицы Excel, пожалуйста, скачайте файл и откройте его в Microsoft Excel или другом совместимом приложении.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        this.previewContainer.innerHTML = '';
+        this.previewContainer.appendChild(excelContainer);
+    }
+
+    // Метод для предпросмотра PowerPoint документов
+    previewPowerPoint(fileUrl, filename) {
+        // Создаем контейнер для содержимого PowerPoint
+        const pptContainer = document.createElement('div');
+        pptContainer.className = 'preview-document preview-powerpoint';
+        
+        // Показываем информацию о презентации с вариантами действий
+        pptContainer.innerHTML = `
+            <div class="office-preview-container">
+                <div class="office-preview-icon">
+                    <i class="fas fa-file-powerpoint fa-4x"></i>
+                </div>
+                <div class="office-preview-info">
+                    <h3>Презентация Microsoft PowerPoint</h3>
+                    <p>Файл: ${filename}</p>
+                    <div class="office-preview-actions">
+                        <a href="${fileUrl}" class="btn btn-primary" download="${filename}">
+                            <i class="fas fa-download"></i> Скачать презентацию
+                        </a>
+                        <a href="${fileUrl}?download=false" class="btn btn-secondary" target="_blank">
+                            <i class="fas fa-external-link-alt"></i> Открыть в новой вкладке
+                        </a>
+                    </div>
+                    <div class="office-preview-message">
+                        <p>Для просмотра содержимого презентации PowerPoint, пожалуйста, скачайте файл и откройте его в Microsoft PowerPoint или другом совместимом приложении.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        this.previewContainer.innerHTML = '';
+        this.previewContainer.appendChild(pptContainer);
+    }
+
+    // Метод для отображения ошибки при предпросмотре Office документов
+    showOfficeViewerError(container, fileUrl, filename, type) {
+        const typeMap = {
+            'word': { icon: 'fa-file-word', name: 'документа Word' },
+            'excel': { icon: 'fa-file-excel', name: 'таблицы Excel' },
+            'powerpoint': { icon: 'fa-file-powerpoint', name: 'презентации PowerPoint' }
+        };
+        
+        const typeInfo = typeMap[type] || { icon: 'fa-file', name: 'документа' };
+        
+        container.innerHTML = `
+            <div class="preview-error">
+                <i class="fas ${typeInfo.icon}"></i>
+                <p>Не удалось показать предпросмотр ${typeInfo.name}</p>
+                <p>Возможно, сервер недоступен или документ слишком большой</p>
+                <div class="office-actions">
+                    <a href="${fileUrl}" class="btn btn-primary" target="_blank" download>
+                        <i class="fas fa-download"></i> Скачать документ
+                    </a>
+                    <a href="https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + fileUrl)}" class="btn btn-secondary" target="_blank">
+                        <i class="fas fa-external-link-alt"></i> Открыть в Google Viewer
+                    </a>
+                </div>
+            </div>
+        `;
     }
     
     // Helper to determine the right Office icon

@@ -1312,11 +1312,32 @@ def download_file(link_id, filename):
             mime_type = extensions_mime.get(ext, 'application/octet-stream')
             
         try:
-            # ИСПРАВЛЕНО: Всегда используем as_attachment=True для принудительного скачивания
+            # Проверяем, является ли запрос запросом на скачивание или просмотр
+            is_download = request.args.get('download', 'false').lower() == 'true'
+            force_download = False
+            
+            # Для PDF файлов в режиме превью не используем as_attachment
+            if ext == 'pdf' and not is_download:
+                force_download = False
+            # Для Office документов предоставляем возможность открытия в браузере
+            elif ext in ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'] and request.args.get('download', 'true').lower() == 'false':
+                force_download = False
+            else:
+                # Для остальных файлов или при явном запросе на скачивание
+                force_download = True
+                
+            # Скриншоты Windows могут содержать { и } в имени, и они обычно PNG
+            if ext == 'png' and ('{' in safe_filename and '}' in safe_filename):
+                force_download = False  # Предположительно это скриншот, показываем его
+            
+            # Если это изображение и не запрос на скачивание, показываем его в браузере
+            if ext in ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'] and not is_download:
+                force_download = False
+            
             return send_file(
                 file_path,
                 mimetype=mime_type,
-                as_attachment=True,
+                as_attachment=force_download,  # Используем as_attachment=False для просмотра в браузере
                 download_name=safe_filename
             )
         except Exception as e:
