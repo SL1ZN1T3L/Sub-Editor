@@ -64,7 +64,6 @@
             position: sticky;
             top: 0;
             z-index: 2;
-            border-bottom: 2px solid var(--border-color);
         }
         
         .file-table td {
@@ -100,6 +99,7 @@
         .file-table th,
         .file-table td {
             border-color: var(--border-color);
+            vertical-align: top; 
         }
         
         .file-table tr:hover {
@@ -109,6 +109,18 @@
         /* Ensure border remains consistent on hover */
         .file-table tr:hover td {
             border-bottom-color: var(--border-color);
+        }
+        
+        .file-table th:nth-child(3), 
+        .file-table td:nth-child(3) {
+            width: 150px; /* Увеличено для полного текста */
+            max-width: 150px; /* Увеличено для полного текста */
+            padding-left: 10px;
+            padding-right: 10px;
+            white-space: normal; /* Allow wrapping */
+            overflow: hidden;
+            text-overflow: ellipsis;
+            vertical-align: top; /* Align text to top */
         }
         
         .theme-switch {
@@ -965,6 +977,34 @@
             white-space: nowrap;
             flex-grow: 1;
         }
+
+        /* Стили для полей фильтрации */
+        .filter-input {
+            width: 95%;
+            padding: 4px 8px;
+            margin: 0;
+            box-sizing: border-box;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-size: 12px;
+        }
+        
+        .filter-row th {
+            padding-top: 5px;
+            padding-bottom: 10px;
+            position: static; 
+            vertical-align: top; /* Align filter input to top */
+            border-bottom: 2px solid var(--border-color);
+        }
+        
+        .file-table th:nth-child(4), 
+        .file-table td:nth-child(4),
+        .file-table th:nth-child(5), 
+        .file-table td:nth-child(5) {
+             padding-left: 10px;
+        }
     </style>
 </head>
 <body>
@@ -1078,13 +1118,28 @@
                                 <tr>
                                     <th style="width: 40px;"></th>
                                     <th>Имя файла</th>
-                                    <th>Расширение файла</th>
-                                    <th style="padding-left: 15px;">Размер</th>
-                                    <th style="padding-left: 15px;">Дата изменения</th>
+                                    <th style="width: 150px;">Расширение<br>файла</th> <!-- Увеличено и перенесено -->
+                                    <th style="padding-left: 10px;">Размер</th>
+                                    <th style="padding-left: 10px;">Дата изменения</th>
                                     <th>Действия</th>
                                 </tr>
+                                <!-- Строка для фильтров -->
+                                <tr class="filter-row">
+                                    <th></th> <!-- Пустая ячейка для чекбокса -->
+                                    <th>
+                                        <input type="text" id="filterFileName" class="filter-input" placeholder="Фильтр по имени" list="fileNameList">
+                                        <datalist id="fileNameList"></datalist>
+                                    </th>
+                                    <th style="width: 150px;"> <!-- Увеличено -->
+                                        <input type="text" id="filterFileExt" class="filter-input" placeholder="Фильтр" list="fileExtList">
+                                        <datalist id="fileExtList"></datalist>
+                                    </th>
+                                    <th></th> <!-- Пустая ячейка для размера -->
+                                    <th></th> <!-- Пустая ячейка для даты -->
+                                    <th></th> <!-- Пустая ячейка для действий -->
+                                </tr>
                             </thead>
-                            <tbody>
+                            <tbody id="fileTableBody"> <!-- Добавлен ID для tbody -->
                                 {% for file in files %}
                                 <tr class="file-item">
                                     <td>
@@ -1093,12 +1148,12 @@
                                     <td class="text-truncate file-name-container" style="max-width: 200px;" title="{{ file.name|e }}">
                                         <span class="file-name">{{ file.name.rsplit('.', 1)[0]|e }}</span>
                                     </td>
-                                    <td style="padding-left: 15px;">
+                                    <td style="width: 150px; padding-left: 10px;"> <!-- Увеличено -->
                                         {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
                                         {{ ext }}
                                     </td>
-                                    <td style="padding-left: 15px;">{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
-                                    <td style="padding-left: 15px;">{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
+                                    <td style="padding-left: 10px;">{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
+                                    <td style="padding-left: 10px;">{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
                                     <td>
                                         <div class="file-actions">
                                             {% set ext = file.name.split('.')[-1]|lower %}
@@ -2165,6 +2220,113 @@
                 shareModal.classList.remove('active');
             }
         });
+
+        // --- Логика фильтрации таблицы ---
+        document.addEventListener('DOMContentLoaded', function() {
+            // Инициализация фильтрации
+            const filterFileNameInput = document.getElementById('filterFileName');
+            const filterFileExtInput = document.getElementById('filterFileExt');
+            const tableBody = document.getElementById('fileTableBody');
+            const tableRows = tableBody.getElementsByTagName('tr');
+            const fileNameList = document.getElementById('fileNameList');
+            const fileExtList = document.getElementById('fileExtList');
+
+            // Сбор уникальных значений для автодополнения
+            const uniqueFileNames = new Set();
+            const uniqueFileExts = new Set();
+
+            for (let i = 0; i < tableRows.length; i++) {
+                const row = tableRows[i];
+                const fileNameCell = row.cells[1]; // Ячейка с именем файла
+                const fileExtCell = row.cells[2];  // Ячейка с расширением
+
+                if (fileNameCell && fileNameCell.textContent) {
+                    const fullName = fileNameCell.closest('td').getAttribute('title'); // Получаем полное имя из title
+                    if (fullName) {
+                         const namePart = fullName.substring(0, fullName.lastIndexOf('.')) || fullName;
+                         uniqueFileNames.add(namePart.trim());
+                    }
+                }
+                if (fileExtCell && fileExtCell.textContent) {
+                    uniqueFileExts.add(fileExtCell.textContent.trim());
+                }
+            }
+
+            // Заполнение datalist для имени файла
+            uniqueFileNames.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                fileNameList.appendChild(option);
+            });
+
+            // Заполнение datalist для расширения файла
+            uniqueFileExts.forEach(ext => {
+                if (ext) { // Не добавляем пустые расширения
+                    const option = document.createElement('option');
+                    option.value = ext;
+                    fileExtList.appendChild(option);
+                }
+            });
+
+
+            function applyFilters() {
+                const filterFileName = filterFileNameInput.value.toLowerCase();
+                const filterFileExt = filterFileExtInput.value.toLowerCase();
+
+                for (let i = 0; i < tableRows.length; i++) {
+                    const row = tableRows[i];
+                    const fileNameCell = row.cells[1]; // Ячейка с именем файла (часть до расширения)
+                    const fileExtCell = row.cells[2];  // Ячейка с расширением
+                    const fullFileNameFromTitle = fileNameCell.closest('td').getAttribute('title').toLowerCase(); // Получаем полное имя из title
+
+                    if (fileNameCell && fileExtCell && fullFileNameFromTitle) {
+                        const fileNameMatch = fullFileNameFromTitle.includes(filterFileName); 
+                        
+                        const fileExt = fileExtCell.textContent.toLowerCase();
+                        const fileExtMatch = fileExt.includes(filterFileExt);
+
+                        if (fileNameMatch && fileExtMatch) {
+                            row.style.display = ''; // Показать строку
+                        } else {
+                            row.style.display = 'none'; // Скрыть строку
+                        }
+                    }
+                }
+                updateSelectAllCheckboxState();
+                updateButtonsVisibility(); 
+            }
+
+            filterFileNameInput.addEventListener('input', applyFilters);
+            filterFileExtInput.addEventListener('input', applyFilters);
+
+            function updateSelectAllCheckboxState() {
+                const allVisibleCheckboxes = document.querySelectorAll('.file-checkbox:not(#select-all):not([style*="display: none"])');
+                const checkedVisibleCheckboxes = document.querySelectorAll('.file-checkbox:not(#select-all):checked:not([style*="display: none"])');
+                const selectAllCheckbox = document.getElementById('select-all');
+                
+                if (allVisibleCheckboxes.length > 0) {
+                    selectAllCheckbox.checked = allVisibleCheckboxes.length === checkedVisibleCheckboxes.length;
+                } else {
+                    selectAllCheckbox.checked = false; 
+                }
+            }
+            
+            document.getElementById('select-all').addEventListener('change', function() {
+                const isChecked = this.checked;
+                const visibleCheckboxes = document.querySelectorAll('#fileTableBody tr:not([style*="display: none"]) .file-checkbox:not(#select-all)');
+                visibleCheckboxes.forEach(checkbox => checkbox.checked = isChecked);
+                updateButtonsVisibility();
+            });
+
+            document.querySelectorAll('.file-checkbox:not(#select-all)').forEach(checkbox => {
+                checkbox.addEventListener('change', function() {
+                    updateButtonsVisibility();
+                    updateSelectAllCheckboxState(); 
+                });
+            });
+
+        });
+        // --- Конец логики фильтрации ---
     </script>
 </body>
 </html>
