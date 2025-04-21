@@ -12,12 +12,9 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/preview.css') }}">
     
-    <!-- Библиотеки для обработки Office документов -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/pptxjs@1.21.1/dist/pptxjs.min.js"></script>
+    <!-- Удаляем неиспользуемые библиотеки для Office документов -->
     
-    <script src="{{ url_for('static', filename='js/preview.js') }}" defer></script>
+    <!-- Скрипты библиотек предпросмотра будут добавлены в конце body -->
     <style>
         :root[data-theme="light"] {
             --bg-color: #ffffff;
@@ -1005,6 +1002,45 @@
         .file-table td:nth-child(5) {
              padding-left: 10px;
         }
+
+        /* Добавляем стили для контейнеров предпросмотра */
+        .docx-wrapper, .excel-wrapper, .pptx-wrapper, .preview-pdf-embed {
+            width: 80vw;
+            height: 80vh;
+            overflow: auto;
+            background-color: white;
+            padding: 0;
+            box-sizing: border-box;
+            border-radius: 5px;
+            border: none;
+        }
+        .preview-pdf-embed {
+             background-color: #525659;
+        }
+
+        /* Стили для таблиц Excel */
+        .excel-wrapper table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 12px;
+            color: #333;
+        }
+        .excel-wrapper th, .excel-wrapper td {
+            border: 1px solid #ccc;
+            padding: 4px 6px;
+            text-align: left;
+            vertical-align: top;
+        }
+        .excel-wrapper th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+
+        /* Стили для PPTX (если pptx2html их не предоставляет) */
+        .pptx-wrapper {
+             background-color: #f0f0f0;
+             padding: 15px;
+        }
     </style>
 </head>
 <body>
@@ -1157,15 +1193,30 @@
                                     <td>
                                         <div class="file-actions">
                                             {% set ext = file.name.split('.')[-1]|lower %}
+                                            {# Обновляем список расширений, включая PDF и Office #}
+                                            {% set previewable_extensions = [
+                                                'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
+                                                'pdf',
+                                                'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'rtf',
+                                                'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm',
+                                                'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm',
+                                                'odt', 'ods', 'odp',
+                                                'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
+                                                'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
+                                                'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
+                                                'tex', 'bib', 'log', 'diff', 'patch'
+                                            ] %}
+                                            {% if ext in previewable_extensions %}
                                             <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
                                                 <i class="fas fa-eye"></i>
                                             </button>
-                                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}" 
+                                            {% endif %}
+                                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}"
                                                 class="btn btn-download" title="Скачать" download>
                                                 <i class="fas fa-download"></i>
                                             </a>
-                                            <button class="btn btn-delete" 
-                                                    onclick="deleteFile('{{ file.name|e|escapejs }}')" 
+                                            <button class="btn btn-delete"
+                                                    onclick="deleteFile('{{ file.name|e|escapejs }}')"
                                                     title="Удалить">
                                                 <i class="fas fa-trash"></i>
                                             </button>
@@ -1224,7 +1275,10 @@
             <button class="preview-close" id="previewClose">
                 <i class="fas fa-times"></i>
             </button>
-            <div id="previewContainer"></div>
+            <!-- Контейнер для предпросмотра -->
+            <div id="previewContainer">
+                 <!-- Сюда будут рендериться docx, excel, pptx -->
+            </div>
             <div class="preview-filename" id="previewFilename"></div>
             <div class="preview-controls">
                 <button class="preview-control" id="previewPrev">
@@ -1467,6 +1521,14 @@
                             });
 
                             if (!response.ok) {
+                                // Добавляем логирование для 404 ошибки
+                                if (response.status === 404) {
+                                    console.error(`Ошибка 404 при загрузке чанка ${chunkNumber} для файла ${file.name}. URL: ${response.url}. Возможно, хранилище ${linkId} истекло или было удалено.`);
+                                    updateFileStatus(index, 'error', 'Ошибка: Хранилище не найдено или истекло');
+                                    uploadControllers.delete(index); // Прекращаем загрузку
+                                    return; // Выходим из функции uploadFile
+                                }
+                                
                                 if (response.status === 413) {
                                     currentChunkSize = Math.floor(currentChunkSize / 2);
                                     if (currentChunkSize < 64 * 1024) {
@@ -2327,6 +2389,12 @@
 
         });
         // --- Конец логики фильтрации ---
+
+        // Подключаем PDF.js (лучше использовать конкретную версию)
     </script>
+    <script src="https://unpkg.com/docx-preview/dist/docx-preview.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/pptx2html/dist/pptx2html.min.js"></script>
+    <script src="{{ url_for('static', filename='js/preview.js') }}" defer></script>
 </body>
 </html>

@@ -225,22 +225,30 @@ def add_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://netdna.bootstrapcdn.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' https://cdnjs.cloudflare.com;"
+    # Обновляем CSP:
+    # - Добавляем unpkg.com и cdn.sheetjs.com в script-src
+    # - Добавляем blob: в worker-src (для docx-preview и pdf.js)
+    # - Добавляем unpkg.com в style-src (на случай, если pptx2html использует CSS оттуда)
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.sheetjs.com; "
+        "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com; "
+        "img-src 'self' data:; "
+        "font-src 'self' https://cdnjs.cloudflare.com; "
+        "worker-src 'self' blob:;"
+    )
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Pragma'] = 'no-cache'
-    
-    # Устанавливаем заголовок Referrer-Policy для контроля утечек Referrer
     response.headers['Referrer-Policy'] = 'same-origin'
-    
-    # Устанавливаем Feature-Policy для ограничения опасных функций
     response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
-    
+
     # Для API-ответов с JSON не нужны некоторые заголовки
     if response.mimetype == 'application/json':
-        # Для JSON-ответов некоторые CSP-директивы не применимы
-        response.headers['Content-Security-Policy'] = "default-src 'none'"
-    
+        # Обновляем CSP для JSON, чтобы не переопределять worker-src
+        # Оставляем worker-src 'none' т.к. JSON ответы не должны запускать воркеры
+        response.headers['Content-Security-Policy'] = "default-src 'none'; worker-src 'none';"
+
     # Для файлов разного типа нужны разные заголовки
     elif response.mimetype.startswith('image/'):
         response.headers['Content-Disposition'] = 'inline'
@@ -248,7 +256,7 @@ def add_security_headers(response):
         # Для загружаемых файлов устанавливаем Content-Disposition: attachment
         if 'Content-Disposition' not in response.headers:
             response.headers['Content-Disposition'] = 'attachment'
-    
+
     return response
 
 @app.after_request
@@ -710,6 +718,113 @@ def escapejs_filter(value):
         result = result.replace(char, replacement)
     return result
 
+# --- Добавленные функции для очистки ---
+
+async def cleanup_expired_storages_async():
+    """Асинхронная очистка истекших временных хранилищ"""
+    try:
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time_iso = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Находим все истекшие хранилища
+            cursor = await conn.execute('SELECT link_id FROM temp_links WHERE expires_at <= ?', (current_time_iso,))
+            expired_links = await cursor.fetchall()
+            
+            if not expired_links:
+                logger.info("Нет истекших хранилищ для очистки.")
+                return
+
+            logger.info(f"Найдено {len(expired_links)} истекших хранилищ для удаления.")
+            
+            deleted_count = 0
+            for link_tuple in expired_links:
+                link_id = link_tuple[0]
+                storage_path = get_temp_storage_path(link_id)
+                
+                # Удаляем директорию хранилища
+                if os.path.exists(storage_path):
+                    try:
+                        shutil.rmtree(storage_path)
+                        logger.info(f"Удалена директория истекшего хранилища: {link_id}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении директории хранилища {link_id}: {str(e)}")
+                
+                # Удаляем запись из базы данных
+                try:
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                    deleted_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка при удалении записи о хранилище {link_id} из БД: {str(e)}")
+
+            await conn.commit()
+            logger.info(f"Успешно удалено {deleted_count} записей об истекших хранилищах из БД.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка во время очистки истекших хранилищ: {str(e)}")
+
+def cleanup_expired_sessions():
+    """Очистка старых файлов сессий"""
+    try:
+        session_dir = app.config['SESSION_FILE_DIR']
+        if not os.path.exists(session_dir):
+            logger.warning(f"Директория сессий не найдена: {session_dir}")
+            return
+
+        now = time.time()
+        lifetime_seconds = app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()
+        deleted_count = 0
+
+        for filename in os.listdir(session_dir):
+            file_path = os.path.join(session_dir, filename)
+            try:
+                # Проверяем, что это файл
+                if os.path.isfile(file_path):
+                    # Получаем время последнего доступа к файлу
+                    last_accessed = os.path.getatime(file_path)
+                    # Если файл не использовался дольше времени жизни сессии, удаляем его
+                    if now - last_accessed > lifetime_seconds:
+                        os.remove(file_path)
+                        deleted_count += 1
+                        logger.debug(f"Удален старый файл сессии: {filename}")
+            except Exception as e:
+                logger.error(f"Ошибка при обработке файла сессии {filename}: {str(e)}")
+        
+        if deleted_count > 0:
+            logger.info(f"Удалено {deleted_count} старых файлов сессий.")
+        else:
+            logger.info("Нет старых файлов сессий для удаления.")
+            
+    except Exception as e:
+        logger.error(f"Ошибка во время очистки файлов сессий: {str(e)}")
+
+def periodic_cleanup():
+    """Периодическая задача для очистки истекших данных"""
+    cleanup_interval_hours = int(os.getenv('CLEANUP_INTERVAL_HOURS', 1)) # По умолчанию каждый час
+    cleanup_interval_seconds = cleanup_interval_hours * 3600
+    
+    logger.info(f"Запуск периодической очистки каждые {cleanup_interval_hours} час(а).")
+    
+    while True:
+        try:
+            logger.info("Начало периодической очистки...")
+            
+            # Очистка истекших хранилищ (асинхронно)
+            run_async(cleanup_expired_storages_async)()
+            
+            # Очистка старых сессий (синхронно)
+            cleanup_expired_sessions()
+            
+            logger.info("Периодическая очистка завершена.")
+        except Exception as e:
+            logger.error(f"Ошибка в потоке периодической очистки: {str(e)}")
+        
+        # Ждем до следующего запуска
+        time.sleep(cleanup_interval_seconds)
+
+# --- Конец добавленных функций ---
+
 # Уникальные идентификаторы сессий загрузки для обработки конкурентной загрузки
 upload_sessions = {}
 
@@ -718,7 +833,7 @@ def handle_error(e, default_message="Внутренняя ошибка серв�
     """Централизованная обработка ошибок с логированием и без утечки системной информации"""
     if log_message:
         logger.error(log_message)
-    logger.error(f"Ошибка: {str(e)}")
+    logger.exception(f"Ошибка: {str(e)}") # Используем logger.exception для traceback
     
     # Не показываем чувствительную информацию в ответе клиенту
     return default_message
@@ -869,372 +984,6 @@ def temp_storage(link_id):
         logger.error(f"Ошибка при загрузке страницы: {str(e)}")
         return "Произошла ошибка при загрузке страницы. Пожалуйста, попробуйте позже.", 500
 
-@app.route('/<link_id>/upload', methods=['POST'])
-@csrf_protected
-def upload_file(link_id):
-    """Загрузка файла в временное хранилище"""
-    try:
-        # Проверка на безопасность link_id
-        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-            logger.warning(f"Попытка загрузки с некорректным link_id: {link_id}")
-            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
-            
-        # Проверяем валидность хранилища
-        if not is_temp_storage_valid(link_id):
-            logger.error(f"Попытка загрузки в недействительное хранилище: {link_id}")
-            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
-            
-        if 'file' not in request.files:
-            logger.error("Файл не был отправлен в запросе")
-            return jsonify({'error': 'Файл не выбран'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            logger.error("Пустое имя файла")
-            return jsonify({'error': 'Файл не выбран'}), 400
-        
-        # Проверяем тип файла
-        original_filename = file.filename
-        if not allowed_file(original_filename):
-            logger.warning(f"Попытка загрузить файл недопустимого типа: {original_filename}")
-            return jsonify({'error': 'Тип файла не разрешен для загрузки'}), 400
-
-        # Получаем информацию о чанках и сессии загрузки
-        try:
-            # Используем strip для предотвращения атак с вводом манипулированных данных
-            chunk_number_str = request.form.get('chunk', '0').strip()
-            total_chunks_str = request.form.get('chunks', '1').strip()
-            total_size_str = request.form.get('total_size', '0').strip()
-            upload_session_id = request.form.get('upload_session_id', '').strip()
-            
-            # Строгая проверка на числовые значения
-            if not chunk_number_str.isdigit() or not total_chunks_str.isdigit() or not total_size_str.isdigit():
-                logger.error(f"Получены некорректные числовые параметры: chunk={chunk_number_str}, chunks={total_chunks_str}, size={total_size_str}")
-                return jsonify({'error': 'Параметры загрузки должны быть числовыми значениями'}), 400
-                
-            chunk_number = max(0, int(chunk_number_str))
-            total_chunks = max(1, int(total_chunks_str))
-            total_size = max(0, int(total_size_str))
-            
-            # Проверка разумных пределов
-            if total_chunks > 10000:
-                logger.error(f"Слишком большое количество чанков: {total_chunks}")
-                return jsonify({'error': 'Превышено максимальное количество чанков'}), 400
-                
-            # Проверка upload_session_id на безопасность (только буквенно-цифровые символы)
-            if not re.match(r'^[a-zA-Z0-9_-]*$', upload_session_id):
-                logger.warning(f"Некорректный upload_session_id: {upload_session_id}")
-                return jsonify({'error': 'Недействительный идентификатор сессии'}), 400
-        except (ValueError, TypeError) as e:
-            logger.error(f"Некорректные параметры загрузки: {str(e)}")
-            return jsonify({'error': 'Некорректные параметры загрузки'}), 400
-
-        # Проверяем размер файла
-        file.seek(0, 2)  # Перемещаемся в конец файла
-        chunk_size = file.tell()  # Получаем размер чанка
-        file.seek(0)  # Возвращаемся в начало
-        
-        # Добавляем проверку на нулевой размер чанка
-        if chunk_size <= 0:
-            logger.error(f"Попытка загрузки файла с некорректным размером чанка: {chunk_size}")
-            return jsonify({'error': 'Некорректный размер чанка'}), 400
-            
-        # Проверка на максимальный размер чанка
-        if chunk_size > app.config['MAX_CHUNK_SIZE']:
-            logger.error(f"Превышен максимальный размер чанка: {chunk_size} > {app.config['MAX_CHUNK_SIZE']}")
-            max_chunk_mb = app.config['MAX_CHUNK_SIZE'] / (1024*1024)
-            return jsonify({'error': f'Превышен максимальный размер чанка ({max_chunk_mb:.1f} MB)'}), 400
-        
-        # Проверка максимального размера файла из конфигурации
-        if total_size <= 0 or total_size > app.config['MAX_FILE_SIZE']:
-            logger.error(f"Некорректный общий размер файла: {total_size}, максимум: {app.config['MAX_FILE_SIZE']}")
-            max_size_mb = app.config['MAX_FILE_SIZE'] / (1024*1024)
-            return jsonify({'error': f'Превышен максимальный размер файла ({max_size_mb:.0f} MB)'}), 400
-        
-        storage_path = get_temp_storage_path(link_id)
-        current_size = get_temp_storage_size(link_id)
-        
-        # Формируем безопасное имя файла
-        # ИСПРАВЛЕНО: сохраняем имя файла, а не только расширение
-        filename = secure_filename(original_filename)
-        if not filename or filename == '.':
-            logger.error(f"Не удалось создать безопасное имя файла из {original_filename}")
-            return jsonify({'error': 'Недопустимое имя файла'}), 400
-        
-        # Установка и проверка сессии загрузки для обработки конкурентных загрузок
-        if chunk_number == 0:
-            # Для первого чанка создаем или обновляем запись сессии
-            upload_sessions[upload_session_id] = {
-                'filename': filename,
-                'total_size': total_size,
-                'last_update': time.time()
-            }
-            
-            # Проверка на ограничение количества файлов в хранилище
-            if app.config['MAX_FILES_PER_STORAGE'] > 0:
-                try:
-                    # Подсчитываем количество файлов в хранилище
-                    if os.path.exists(storage_path):
-                        file_count = len([f for f in os.listdir(storage_path) if os.path.isfile(os.path.join(storage_path, f))])
-                        
-                        # Проверяем, не существует ли уже файл с таким именем
-                        file_path = os.path.join(storage_path, filename)
-                        file_exists = os.path.exists(file_path)
-                        
-                        # Если файл с таким именем не существует, и мы превысили лимит
-                        if not file_exists and file_count >= app.config['MAX_FILES_PER_STORAGE']:
-                            logger.warning(f"Превышен лимит файлов в хранилище {link_id}: {file_count}/{app.config['MAX_FILES_PER_STORAGE']}")
-                            return jsonify({
-                                'error': f'Превышен лимит файлов в хранилище ({app.config["MAX_FILES_PER_STORAGE"]}). Удалите ненужные файлы.'
-                            }), 400
-                except Exception as e:
-                    logger.error(f"Ошибка при проверке количества файлов в хранилище: {str(e)}")
-            
-        elif upload_session_id not in upload_sessions:
-            logger.error(f"Недействительная сессия загрузки: {upload_session_id}")
-            return jsonify({'error': 'Недействительная сессия загрузки'}), 400
-        else:
-            # Обновляем время последнего обновления
-            upload_sessions[upload_session_id]['last_update'] = time.time()
-        
-        # Проверяем размер только для первого чанка
-        if chunk_number == 0:
-            remaining_size = max(0, app.config['MAX_STORAGE_SIZE'] - current_size)
-            if total_size > remaining_size:
-                logger.error(f"Превышен лимит хранилища. Текущий размер: {current_size}, размер файла: {total_size}, доступно: {remaining_size}")
-                return jsonify({
-                    'error': f'Превышен лимит хранилища ({MAX_STORAGE_SIZE_MB} MB). Использовано: {current_size / (1024*1024):.2f} MB'
-                }), 400
-
-        # Дополнительная проверка валидности пути хранилища
-        try:
-            storage_path = os.path.abspath(storage_path)
-            expected_base_path = os.path.abspath(TEMP_STORAGE_DIR)
-            if not storage_path.startswith(expected_base_path):
-                logger.error(f"Попытка доступа к недопустимой директории: {storage_path}")
-                return jsonify({'error': 'Недопустимый путь хранилища'}), 403
-        except Exception as e:
-            logger.error(f"Ошибка при проверке пути хранилища: {str(e)}")
-            return jsonify({'error': 'Ошибка при проверке пути хранилища'}), 500
-
-        # Создаем временный файл для безопасного сохранения чанка
-        try:
-            # Создаем директорию если её нет
-            os.makedirs(storage_path, exist_ok=True)
-            
-            # Путь к постоянному файлу
-            file_path = os.path.join(storage_path, filename)
-            
-            # Для первого чанка используем временный файл с уникальным именем
-            if chunk_number == 0:
-                # Если файл существует, удаляем его перед началом новой загрузки
-                if os.path.exists(file_path):
-                    try:
-                        os.remove(file_path)
-                        logger.info(f"Удален существующий файл {filename} перед новой загрузкой")
-                    except Exception as e:
-                        logger.error(f"Ошибка при удалении существующего файла {filename}: {str(e)}")
-                        return jsonify({'error': 'Не удалось подготовить файл к загрузке'}), 500
-            
-            # Открываем файл в режиме добавления для всех чанков кроме первого
-            mode = 'wb' if chunk_number == 0 else 'ab'
-            
-            # Создаем временный файл, чтобы избежать гонки условий
-            temp_fd, temp_path = tempfile.mkstemp(dir=storage_path)
-            try:
-                with os.fdopen(temp_fd, 'wb') as temp_file:
-                    file.save(temp_file)
-                
-                # Проверяем размер временного файла
-                temp_size = os.path.getsize(temp_path)
-                if temp_size != chunk_size:
-                    os.unlink(temp_path)
-                    logger.error(f"Размер сохраненного чанка не соответствует ожидаемому: {temp_size} != {chunk_size}")
-                    return jsonify({'error': 'Ошибка при сохранении файла: неверный размер чанка'}), 500
-                
-                # Если это первый чанк, просто переименовываем временный файл
-                if chunk_number == 0:
-                    if os.path.exists(file_path):
-                        os.unlink(file_path)
-                    os.rename(temp_path, file_path)
-                else:
-                    # Для последующих чанков добавляем содержимое временного файла к основному
-                    with open(file_path, 'ab') as main_file, open(temp_path, 'rb') as t_file:
-                        shutil.copyfileobj(t_file, main_file)
-                    # Удаляем временный файл
-                    os.unlink(temp_path)
-                
-                # Проверяем размер обновленного файла
-                file_size = os.path.getsize(file_path)
-                expected_size = (chunk_number + 1) * chunk_size
-                
-                # Если это последний чанк, используем общий размер файла
-                if chunk_number == total_chunks - 1:
-                    expected_size = total_size
-                    
-                    # Для последнего чанка, проверяем итоговый размер
-                    if file_size != total_size:
-                        logger.error(f"Итоговый размер файла не совпадает: {file_size} != {total_size}")
-                        os.remove(file_path)
-                        return jsonify({'error': 'Ошибка при сохранении файла: неверный итоговый размер'}), 500
-                    
-                    # Очищаем информацию о сессии загрузки
-                    if upload_session_id in upload_sessions:
-                        del upload_sessions[upload_session_id]
-                        
-                    logger.info(f"Файл {filename} успешно загружен в хранилище {link_id}")
-                
-                # Для промежуточных чанков проверяем, соответствует ли общий размер ожидаемому
-                elif file_size < expected_size * 0.9 or file_size > expected_size * 1.1:
-                    logger.error(f"Размер файла после загрузки чанка не соответствует ожидаемому: {file_size} (ожидалось около {expected_size})")
-                    os.remove(file_path)
-                    return jsonify({'error': 'Ошибка при сохранении файла: неверный размер'}), 500
-                
-                return jsonify({
-                    'success': True,
-                    'filename': filename,
-                    'chunk': chunk_number,
-                    'chunks': total_chunks
-                })
-                
-            except Exception as e:
-                # Очищаем временный файл в случае ошибки
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                raise e
-                
-        except Exception as e:
-            logger.error(f"Ошибка при сохранении чанка {chunk_number} файла {file.filename}: {str(e)}")
-            # Чистим файл в случае ошибки
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-            return jsonify({'error': 'Ошибка при сохранении файла'}), 500
-        
-    except Exception as e:
-        logger.error(f"Общая ошибка при загрузке файла: {str(e)}")
-        return jsonify({'error': 'Произошла ошибка при загрузке файла'}), 500
-
-@app.route('/<link_id>/delete-partial/<filename>', methods=['POST'])
-@csrf_protected
-def delete_partial_file(link_id, filename):
-    """Удаление частично загруженного файла"""
-    try:
-        # Проверка на безопасность link_id
-        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-            logger.warning(f"Попытка удаления с некорректным link_id: {link_id}")
-            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
-            
-        # Проверяем валидность хранилища
-        if not is_temp_storage_valid(link_id):
-            logger.error(f"Попытка удаления файла из недействительного хранилища: {link_id}")
-            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
-        
-        # Безопасное формирование пути к файлу
-        safe_filename = secure_filename(filename)
-        if not safe_filename:
-            logger.error(f"Попытка доступа к файлу с пустым или небезопасным именем: {filename}")
-            return jsonify({'error': 'Недопустимое имя файла'}), 400
-        
-        storage_path = get_temp_storage_path(link_id)
-        file_path = os.path.join(storage_path, safe_filename)
-        
-        # Проверка безопасности пути
-        real_file_path = os.path.abspath(file_path)
-        real_storage_path = os.path.abspath(storage_path)
-        if not real_file_path.startswith(real_storage_path):
-            logger.error(f"Попытка доступа к файлу вне хранилища: {filename}")
-            return jsonify({'error': 'Недопустимый путь к файлу'}), 403
-        
-        # Удаляем файл если он существует
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logger.info(f"Удален частично загруженный файл {filename} из хранилища {link_id}")
-                return jsonify({'success': True})
-            except Exception as e:
-                logger.error(f"Ошибка при удалении частично загруженного файла {filename}: {str(e)}")
-                return jsonify({'error': 'Не удалось удалить файл'}), 500
-        
-        return jsonify({'success': True})  # Возвращаем успех, даже если файла нет
-        
-    except Exception as e:
-        logger.error(f"Ошибка при удалении частично загруженного файла: {str(e)}")
-        return jsonify({'error': 'Произошла ошибка при удалении файла'}), 500
-
-@app.route('/<link_id>/delete/<filename>', methods=['POST'])
-@csrf_protected
-def delete_file(link_id, filename):
-    """Удаление файла из временного хранилища"""
-    try:
-        # Проверяем валидность хранилища
-        if not is_temp_storage_valid(link_id):
-            logger.error(f"Попытка удаления файла из недействительного хранилища: {link_id}")
-            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
-        
-        # Безопасное формирование пути к файлу
-        safe_filename = secure_filename(filename)
-        if not safe_filename:
-            logger.error(f"Попытка доступа к файлу с пустым или небезопасным именем: {filename}")
-            return jsonify({'error': 'Недопустимое имя файла'}), 400
-        
-        storage_path = get_temp_storage_path(link_id)
-        file_path = os.path.join(storage_path, safe_filename)
-        
-        # Проверка безопасности пути
-        real_file_path = os.path.abspath(file_path)
-        real_storage_path = os.path.abspath(storage_path)
-        if not real_file_path.startswith(real_storage_path):
-            logger.error(f"Попытка доступа к файлу вне хранилища: {filename}")
-            return jsonify({'error': 'Недопустимый путь к файлу'}), 403
-        
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-                logger.info(f"Файл {filename} успешно удален из хранилища {link_id}")
-                return jsonify({'success': True})
-            except Exception as e:
-                logger.error(f"Ошибка при удалении файла {filename}: {str(e)}")
-                return jsonify({'error': 'Не удалось удалить файл'}), 500
-        else:
-            logger.warning(f"Попытка удаления несуществующего файла {filename} из хранилища {link_id}")
-            return jsonify({'error': 'Файл не найден'}), 404
-    except Exception as e:
-        logger.error(f"Ошибка при удалении файла {filename}: {str(e)}")
-        return jsonify({'error': 'Произошла ошибка при удалении файла'}), 500
-
-@app.route('/<link_id>/delete-all', methods=['POST'])
-@csrf_protected
-def delete_all_storage(link_id):
-    """Удаление всего временного хранилища"""
-    try:
-        if not is_temp_storage_valid(link_id):
-            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
-            
-        # Получаем путь к хранилищу
-        storage_path = get_temp_storage_path(link_id)
-        
-        # Удаляем директорию с файлами
-        if os.path.exists(storage_path):
-            shutil.rmtree(storage_path)
-            logger.info(f"Удалено хранилище по запросу пользователя: {link_id}")
-            
-        # Удаляем запись из базы данных асинхронно
-        @run_async
-        async def delete_storage_record():
-            async with aiosqlite.connect(DB_PATH) as conn:
-                await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-                await conn.commit()
-        
-        delete_storage_record()
-        
-        return jsonify({'success': True})
-    except Exception as e:
-        logger.error(f"Ошибка при удалении хранилища: {str(e)}")
-        return jsonify({'error': 'Произошла ошибка при удалении хранилища'}), 500
-
 @app.route('/<link_id>/download/<filename>')
 def download_file(link_id, filename):
     """Скачивание файла из временного хранилища"""
@@ -1242,22 +991,23 @@ def download_file(link_id, filename):
         # Проверка на безопасность link_id (только буквенно-цифровые символы)
         if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
             logger.warning(f"Попытка скачивания с некорректным link_id: {link_id}")
-            return "Временное хранилище не найдено", 404
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
             
         # Проверяем валидность хранилища
         if not is_temp_storage_valid(link_id):
-            return "Временное хранилище не найдено или срок его действия истек", 404
+            logger.warning(f"Попытка скачивания из недействительного хранилища: {link_id}")
+            return "Хранилище недействительно или срок его действия истек", 404
         
         # Безопасное формирование пути к файлу
         safe_filename = secure_filename(filename)
         if not safe_filename:
-            logger.error(f"Попытка скачивания файла с пустым или небезопасным именем: {filename}")
+            logger.warning(f"Небезопасное имя файла при скачивании: {filename}")
             return "Недопустимое имя файла", 400
         
         # Проверка на длину имени файла
         if len(safe_filename) > 255:
-            logger.error(f"Попытка скачивания файла со слишком длинным именем: {len(safe_filename)} символов")
-            return "Недопустимое имя файла", 400
+            logger.warning(f"Слишком длинное имя файла при скачивании: {len(safe_filename)}")
+            return "Слишком длинное имя файла", 400
             
         storage_path = get_temp_storage_path(link_id)
         file_path = os.path.join(storage_path, safe_filename)
@@ -1266,36 +1016,30 @@ def download_file(link_id, filename):
         real_file_path = os.path.abspath(file_path)
         real_storage_path = os.path.abspath(storage_path)
         if not real_file_path.startswith(real_storage_path):
-            logger.error(f"Попытка скачивания файла вне хранилища: {filename}")
-            return "Недопустимый путь к файлу", 403
+            logger.error(f"Попытка доступа к файлу вне хранилища: {file_path}")
+            return "Доступ запрещен", 403
             
         # Проверка существования файла
         if not os.path.exists(file_path):
-            logger.warning(f"Попытка скачивания несуществующего файла: {filename}")
+            logger.warning(f"Файл не найден: {file_path}")
             return "Файл не найден", 404
             
         # Проверка что это регулярный файл, а не директория или символическая ссылка
         if not os.path.isfile(file_path):
-            logger.warning(f"Попытка скачивания не-файла: {filename}")
-            return "Недопустимый тип ресурса", 400
+            logger.error(f"Попытка скачать не файл: {file_path}")
+            return "Недопустимый тип объекта", 400
             
         # Проверка размера файла
         try:
             file_size = os.path.getsize(file_path)
             if file_size > app.config['MAX_FILE_SIZE']:
-                logger.warning(f"Попытка скачивания слишком большого файла: {filename} ({file_size} байт)")
-                return "Файл слишком большой для скачивания", 400
-                
-            # Проверка нулевого размера файла
-            if file_size == 0:
-                logger.warning(f"Попытка скачивания пустого файла: {filename}")
-                # Разрешаем скачивание пустых файлов, но логируем это
+                logger.error(f"Попытка скачать слишком большой файл: {file_path} ({file_size} байт)")
+                return "Файл слишком большой", 413
         except Exception as e:
             logger.error(f"Ошибка при проверке размера файла {filename}: {str(e)}")
             
         # Устанавливаем правильные MIME-типы для безопасности
         mime_type = 'application/octet-stream'
-        # Определяем некоторые безопасные MIME-типы для распространенных расширений
         extensions_mime = {
             'pdf': 'application/pdf',
             'txt': 'text/plain',
@@ -1303,413 +1047,422 @@ def download_file(link_id, filename):
             'jpg': 'image/jpeg',
             'jpeg': 'image/jpeg',
             'gif': 'image/gif',
-            'zip': 'application/zip'
+            'svg': 'image/svg+xml',
+            'webp': 'image/webp',
+            'bmp': 'image/bmp',
+            'ico': 'image/x-icon',
+            'tiff': 'image/tiff',
+            'tif': 'image/tiff',
+            'zip': 'application/zip',
+            'doc': 'application/msword',
+            'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xls': 'application/vnd.ms-excel',
+            'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'ppt': 'application/vnd.ms-powerpoint',
+            'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            'odt': 'application/vnd.oasis.opendocument.text',
+            'ods': 'application/vnd.oasis.opendocument.spreadsheet',
+            'odp': 'application/vnd.oasis.opendocument.presentation',
+            'rtf': 'application/rtf',
+            'csv': 'text/csv',
+            'html': 'text/html',
+            'htm': 'text/html',
+            'json': 'application/json',
+            'xml': 'application/xml',
+            'js': 'application/javascript',
+            'css': 'text/css',
         }
         
         # Получаем расширение файла
+        ext = ''
         if '.' in safe_filename:
             ext = safe_filename.rsplit('.', 1)[1].lower()
             mime_type = extensions_mime.get(ext, 'application/octet-stream')
             
         try:
             # Проверяем, является ли запрос запросом на скачивание или просмотр
-            is_download = request.args.get('download', 'false').lower() == 'true'
-            force_download = False
-            
-            # Для PDF файлов в режиме превью не используем as_attachment
-            if ext == 'pdf' and not is_download:
-                force_download = False
-            # Для Office документов предоставляем возможность открытия в браузере
-            elif ext in ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'] and request.args.get('download', 'true').lower() == 'false':
-                force_download = False
-            else:
-                # Для остальных файлов или при явном запросе на скачивание
-                force_download = True
-                
-            # Скриншоты Windows могут содержать { и } в имени, и они обычно PNG
-            if ext == 'png' and ('{' in safe_filename and '}' in safe_filename):
-                force_download = False  # Предположительно это скриншот, показываем его
-            
-            # Если это изображение и не запрос на скачивание, показываем его в браузере
-            if ext in ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'] and not is_download:
-                force_download = False
-            
+            is_download_request = request.args.get('download', 'false').lower() == 'true'
+
+            logger.info(f"Отправка файла: {safe_filename}, MIME: {mime_type}, as_attachment: {is_download_request}")
+
+            # Используем is_download_request для определения, скачивать файл или показывать inline
             return send_file(
                 file_path,
                 mimetype=mime_type,
-                as_attachment=force_download,  # Используем as_attachment=False для просмотра в браузере
-                download_name=safe_filename
+                as_attachment=is_download_request, # True если download=true, иначе False (inline)
+                download_name=filename if is_download_request else None # Имя файла только при скачивании
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке файла {filename}: {str(e)}")
-            return "Произошла ошибка при скачивании файла", 500
+            return "Ошибка при отправке файла", 500
             
     except Exception as e:
         logger.error(f"Ошибка при скачивании файла: {str(e)}")
         return "Произошла ошибка при скачивании файла", 500
-
-@app.route('/<link_id>/download-multiple', methods=['POST'])
-@csrf_protected
-def download_multiple_files(link_id):
-    """Скачивание нескольких файлов в архиве"""
-    try:
-        # Проверяем Content-Type
-        if not request.is_json:
-            logger.warning("Получен запрос с неверным Content-Type")
-            return jsonify({'error': 'Ожидался JSON-запрос'}), 400
-            
-        # Проверка на безопасность link_id (только буквенно-цифровые символы)
-        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-            logger.warning(f"Попытка скачивания с некорректным link_id: {link_id}")
-            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
-            
-        # Проверяем валидность хранилища
-        if not is_temp_storage_valid(link_id):
-            logger.error(f"Попытка скачивания из недействительного хранилища: {link_id}")
-            return jsonify({'error': 'Временное хранилище не найдено или срок его действия истек'}), 404
-
-        # Получаем список файлов для скачивания
-        files = request.json.get('files', [])
-        if not files:
-            return jsonify({'error': 'Файлы не выбраны'}), 400
-            
-        # Проверка на максимальное количество файлов для скачивания (защита от DoS)
-        if len(files) > 1000:
-            logger.warning(f"Попытка скачать слишком много файлов: {len(files)}")
-            return jsonify({'error': 'Превышено максимальное количество файлов для скачивания'}), 400
-
-        storage_path = get_temp_storage_path(link_id)
-        real_storage_path = os.path.abspath(storage_path)
-        
-        # Создаем объект в памяти для архива
-        memory_file = BytesIO()
-        
-        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for filename in files:
-                # Проверка на тип данных
-                if not isinstance(filename, str):
-                    logger.warning(f"Некорректный тип данных в списке файлов: {type(filename)}")
-                    continue
-                    
-                # Ограничение длины имени файла
-                if len(filename) > 255:
-                    logger.warning(f"Слишком длинное имя файла: {len(filename)} символов")
-                    continue
-                
-                # Безопасное формирование пути к файлу
-                safe_filename = secure_filename(filename)
-                if not safe_filename:
-                    logger.warning(f"Пропуск файла с небезопасным именем: {filename}")
-                    continue
-                
-                file_path = os.path.join(storage_path, safe_filename)
-                real_file_path = os.path.abspath(file_path)
-                
-                # Проверка безопасности пути
-                if not real_file_path.startswith(real_storage_path):
-                    logger.warning(f"Попытка доступа к файлу вне хранилища: {filename}")
-                    continue
-                
-                # Дополнительная проверка существования файла и его типа
-                if not os.path.exists(file_path) or not os.path.isfile(file_path):
-                    logger.warning(f"Файл не найден или не является обычным файлом: {filename}")
-                    continue
-                    
-                # Проверка на максимальный размер файла для архивации (защита от DoS)
-                file_size = os.path.getsize(file_path)
-                if file_size > 500 * 1024 * 1024:  # 500 MB
-                    logger.warning(f"Файл слишком большой для архивации: {filename} ({file_size} байт)")
-                    continue
-                
-                try:
-                    # Добавляем файл в архив
-                    zf.write(file_path, safe_filename)
-                except Exception as e:
-                    logger.error(f"Ошибка при добавлении файла {filename} в архив: {str(e)}")
-
-        # Перемещаем указатель в начало файла
-        memory_file.seek(0)
-        
-        # Проверяем, были ли добавлены файлы в архив
-        if memory_file.getbuffer().nbytes == 0:
-            logger.warning("Не удалось создать архив - нет подходящих файлов")
-            return jsonify({'error': 'Не удалось создать архив'}), 400
-            
-        # Ограничиваем размер архива для предотвращения DoS
-        archive_size = memory_file.getbuffer().nbytes
-        if archive_size > 1024 * 1024 * 1024:  # 1 GB
-            logger.warning(f"Созданный архив слишком большой: {archive_size} байт")
-            return jsonify({'error': 'Архив слишком большой. Выберите меньше файлов.'}), 400
-        
-        # Безопасное имя для архива
-        safe_archive_name = f'files_{secure_filename(link_id)}.zip'
-        
-        return send_file(
-            memory_file,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name=safe_archive_name
-        )
-
-    except Exception as e:
-        logger.error(f"Ошибка при скачивании файлов: {str(e)}")
-        return jsonify({'error': 'Произошла ошибка при скачивании файлов'}), 500
-
-@app.route('/<link_id>/set-theme', methods=['POST'])
-@csrf_protected
-def set_theme(link_id):
-    """Установка темы для пользователя"""
-    try:
-        # Проверяем Content-Type
-        if not request.is_json:
-            logger.warning("Получен запрос с неверным Content-Type")
-            return jsonify({'error': 'Ожидался JSON-запрос'}), 400
-            
-        theme = request.json.get('theme')
-        if theme not in ['light', 'dark']:
-            return jsonify({'error': 'Неверная тема'}), 400
-
-        # Получаем user_id из базы данных по link_id асинхронно
-        @run_async
-        async def get_user_id_for_theme():
-            async with aiosqlite.connect(DB_PATH) as conn:
-                cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
-                result = await cursor.fetchone()
-                return result[0] if result else None
-        
-        user_id = get_user_id_for_theme()
-        
-        if not user_id:
-            return jsonify({'error': 'Хранилище не найдено'}), 404
-            
-        # Устанавливаем тему
-        if set_user_theme(user_id, theme):
-            return jsonify({'success': True})
-        else:
-            return jsonify({'error': 'Ошибка при установке темы'}), 500
-            
-    except Exception as e:
-        logger.error(f"Ошибка при установке темы: {str(e)}")
-        return jsonify({'error': 'Произошла ошибка при установке темы'}), 500
 
 @app.route('/health')
 def health_check():
     """Проверка работоспособности сервера"""
     return "OK", 200
 
-async def cleanup_expired_storages_async():
-    """Асинхронная очистка истекших временных хранилищ"""
+@app.route('/<link_id>/upload', methods=['POST'])
+@csrf_protected
+def upload_file(link_id):
+    """Загрузка файла во временное хранилище (поддержка чанков)"""
     try:
-        logger.info("Начинаем проверку истекших хранилищ")
-        
-        # Получим текущее московское время в формате ISO
-        moscow_tz = pytz.timezone('Europe/Moscow')
-        now = datetime.now(moscow_tz)
-        current_time_iso = now.strftime('%Y-%m-%d %H:%M:%S')
-        
-        logger.info(f"Текущее время (Москва): {current_time_iso}")
-        
-        # Используем блокировку для предотвращения одновременной очистки из разных потоков
-        cleanup_lock_file = os.path.join(TEMP_STORAGE_DIR, ".cleanup_lock")
-        
-        # Проверяем, запущен ли уже процесс очистки
-        if os.path.exists(cleanup_lock_file):
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка загрузки с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        # Проверяем валидность хранилища ПЕРЕД загрузкой
+        if not is_temp_storage_valid(link_id):
+            logger.warning(f"Попытка загрузки в недействительное хранилище: {link_id}")
+            return jsonify({'error': 'Хранилище недействительно или срок его действия истек'}), 404
+
+        # Проверка лимита хранилища
+        storage_path = get_temp_storage_path(link_id)
+        os.makedirs(storage_path, exist_ok=True)
+        current_size = get_temp_storage_size(link_id)
+
+        # Получаем данные из формы
+        file = request.files.get('file')
+        chunk_number = request.form.get('chunk', type=int)
+        total_chunks = request.form.get('chunks', type=int)
+        total_size = request.form.get('total_size', type=int)
+        upload_session_id = request.form.get('upload_session_id')
+
+        # Проверяем наличие необходимых данных
+        if not file or chunk_number is None or total_chunks is None or total_size is None or not upload_session_id:
+            logger.warning(f"Неполные данные при загрузке в {link_id}")
+            return jsonify({'error': 'Неполные данные запроса'}), 400
+
+        # Безопасное имя файла
+        filename = secure_filename(file.filename)
+        if not filename:
+            logger.warning(f"Небезопасное имя файла при загрузке в {link_id}: {file.filename}")
+            return jsonify({'error': 'Недопустимое имя файла'}), 400
+
+        # Проверка длины имени файла
+        if len(filename) > 255:
+            logger.warning(f"Слишком длинное имя файла при загрузке в {link_id}: {len(filename)}")
+            return jsonify({'error': 'Слишком длинное имя файла'}), 400
+
+        # Проверка разрешенного типа файла
+        if not allowed_file(filename):
+            logger.warning(f"Попытка загрузки файла запрещенного типа в {link_id}: {filename}")
+            allowed_ext_str = ', '.join(app.config['ALLOWED_EXTENSIONS'])
+            return jsonify({'error': f'Тип файла не разрешен. Разрешены только: {allowed_ext_str}'}), 400
+
+        # Проверка лимита количества файлов
+        if app.config['MAX_FILES_PER_STORAGE'] > 0:
             try:
-                # Проверяем время создания файла блокировки
-                lock_time = os.path.getmtime(cleanup_lock_file)
-                current_time = time.time()
-                
-                # Если блокировка старше 30 минут, считаем ее устаревшей и продолжаем
-                if current_time - lock_time > 1800:
-                    logger.warning("Обнаружена устаревшая блокировка очистки. Продолжаем процесс.")
-                    os.remove(cleanup_lock_file)
-                else:
-                    logger.info("Процесс очистки хранилищ уже запущен. Пропускаем.")
-                    return
+                current_files_count = len([name for name in os.listdir(storage_path) if os.path.isfile(os.path.join(storage_path, name))])
+                # Если это первый чанк нового файла, проверяем лимит
+                if chunk_number == 0 and current_files_count >= app.config['MAX_FILES_PER_STORAGE']:
+                    logger.warning(f"Превышен лимит количества файлов в хранилище {link_id}")
+                    return jsonify({'error': f'Превышен лимит количества файлов ({app.config["MAX_FILES_PER_STORAGE"]})'}), 400
             except Exception as e:
-                logger.error(f"Ошибка при проверке файла блокировки: {str(e)}")
-                return
-        
-        # Создаем файл блокировки
+                logger.error(f"Ошибка при подсчете файлов в {link_id}: {str(e)}")
+                # Не блокируем загрузку, если не удалось посчитать файлы
+
+        # Проверка общего лимита хранилища
+        chunk_size = file.content_length
+        if current_size + total_size > app.config['MAX_STORAGE_SIZE']:
+            logger.warning(f"Превышен лимит хранилища {link_id} при загрузке файла {filename}")
+            return jsonify({'error': f'Превышен лимит хранилища ({MAX_STORAGE_SIZE_MB} MB)'}), 400
+
+        # Проверка максимального размера файла
+        if total_size > app.config['MAX_FILE_SIZE']:
+            logger.warning(f"Попытка загрузки слишком большого файла в {link_id}: {filename} ({total_size} байт)")
+            return jsonify({'error': f'Файл слишком большой (макс. {MAX_FILE_SIZE_MB} MB)'}), 413
+
+        # Путь к временному файлу для сборки чанков
+        temp_file_path = os.path.join(storage_path, f"{filename}.part_{upload_session_id}")
+        final_file_path = os.path.join(storage_path, filename)
+
+        # Записываем чанк во временный файл
         try:
-            with open(cleanup_lock_file, 'w') as f:
-                f.write(str(datetime.now()))
-        except Exception as e:
-            logger.error(f"Не удалось создать файл блокировки: {str(e)}")
-            return
-        
-        try:
-            async with aiosqlite.connect(DB_PATH) as conn:
-                # Включаем внешние ключи и WAL режим
-                await conn.execute("PRAGMA foreign_keys = ON")
-                await conn.execute("PRAGMA journal_mode = WAL")
-                
-                # Получаем все истекшие хранилища одним запросом
-                cursor = await conn.execute(
-                    'SELECT link_id FROM temp_links WHERE expires_at <= ?', 
-                    (current_time_iso,)
-                )
-                expired_storages = await cursor.fetchall()
-                
-                logger.info(f"Найдено {len(expired_storages)} истекших хранилищ")
-                
-                deleted_count = 0
-                
-                # Удаляем файлы и записи из базы данных
-                for storage in expired_storages:
-                    link_id = storage[0]
-                    storage_path = get_temp_storage_path(link_id)
-                    
-                    # Проверяем link_id на безопасность
-                    if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-                        logger.warning(f"Пропуск потенциально небезопасного link_id: {link_id}")
-                        continue
-                    
-                    logger.info(f"Удаляем хранилище {link_id}")
-                    
-                    # Удаляем файлы хранилища
-                    if os.path.exists(storage_path):
-                        try:
-                            shutil.rmtree(storage_path)
-                            logger.info(f"Удалены файлы хранилища: {link_id}")
-                        except Exception as e:
-                            logger.error(f"Ошибка при удалении файлов хранилища {link_id}: {str(e)}")
-                    else:
-                        logger.info(f"Директория хранилища {link_id} не существует")
-                    
-                    # Удаляем запись из базы данных в транзакции
+            # Используем 'ab' для добавления данных в конец файла
+            with open(temp_file_path, 'ab') as f:
+                # Перемещаем указатель на нужную позицию (если нужно, но 'ab' делает это автоматически)
+                # f.seek(chunk_number * app.config['UPLOAD_CHUNK_SIZE']) # Не нужно с 'ab'
+                chunk_data = file.read()
+                f.write(chunk_data)
+        except IOError as e:
+            logger.error(f"Ошибка записи чанка {chunk_number} для файла {filename} в {link_id}: {str(e)}")
+            return jsonify({'error': 'Ошибка записи файла на сервере'}), 500
+
+        # Проверяем, все ли чанки загружены
+        if chunk_number == total_chunks - 1:
+            # Проверяем размер собранного файла
+            try:
+                actual_size = os.path.getsize(temp_file_path)
+                if actual_size != total_size:
+                    logger.error(f"Несоответствие размера файла {filename} в {link_id}. Ожидалось: {total_size}, получено: {actual_size}")
+                    # Удаляем временный файл
                     try:
-                        await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-                        deleted_count += 1
-                        logger.info(f"Удалена запись о хранилище {link_id} из базы данных")
-                    except Exception as e:
-                        logger.error(f"Ошибка при удалении записи о хранилище {link_id}: {str(e)}")
-                
-                # Фиксируем изменения
-                await conn.commit()
-                logger.info(f"Очищено {deleted_count} истекших хранилищ из {len(expired_storages)}")
-                
-                # Проводим VACUUM для освобождения места в базе данных
+                        os.remove(temp_file_path)
+                    except OSError as e:
+                        logger.error(f"Не удалось удалить некорректный временный файл {temp_file_path}: {str(e)}")
+                    return jsonify({'error': 'Ошибка сборки файла: несоответствие размера'}), 500
+
+                # Переименовываем временный файл в окончательное имя
                 try:
-                    await conn.execute("VACUUM")
-                    logger.info("Выполнена оптимизация базы данных (VACUUM)")
-                except Exception as e:
-                    logger.error(f"Ошибка при оптимизации базы данных: {str(e)}")
-        except Exception as e:
-            logger.error(f"Ошибка при очистке хранилищ: {str(e)}")
-            # Для отладки выводим полный стек ошибки
-            import traceback
-            logger.error(traceback.format_exc())
-        finally:
-            # Удаляем файл блокировки в любом случае
-            try:
-                if os.path.exists(cleanup_lock_file):
-                    os.remove(cleanup_lock_file)
-            except Exception as e:
-                logger.error(f"Ошибка при удалении файла блокировки: {str(e)}")
+                    # Удаляем старый файл, если он существует (перезапись)
+                    if os.path.exists(final_file_path):
+                        os.remove(final_file_path)
+                    os.rename(temp_file_path, final_file_path)
+                    logger.info(f"Файл {filename} успешно собран и сохранен в {link_id}")
+                except OSError as e:
+                    logger.error(f"Ошибка переименования временного файла {temp_file_path} в {final_file_path}: {str(e)}")
+                    # Пытаемся удалить временный файл в случае ошибки
+                    try:
+                        os.remove(temp_file_path)
+                    except OSError as remove_err:
+                         logger.error(f"Не удалось удалить временный файл {temp_file_path} после ошибки переименования: {str(remove_err)}")
+                    return jsonify({'error': 'Ошибка сохранения файла на сервере'}), 500
+
+            except OSError as e:
+                logger.error(f"Ошибка проверки размера или переименования файла {filename} в {link_id}: {str(e)}")
+                return jsonify({'error': 'Ошибка обработки файла на сервере'}), 500
+
+        return jsonify({'success': True, 'message': f'Chunk {chunk_number + 1}/{total_chunks} uploaded successfully'}), 200
+
     except Exception as e:
-        logger.error(f"Критическая ошибка в процессе очистки: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
+        # Используем handle_error для логирования и безопасного ответа
+        error_message = handle_error(e, log_message=f"Критическая ошибка при загрузке файла в {link_id}")
+        return jsonify({'error': error_message}), 500
 
-def cleanup_expired_storages():
-    """Очистка истекших временных хранилищ (синхронная обертка)"""
-    return run_async(cleanup_expired_storages_async)()
 
-def periodic_cleanup():
-    """Периодическая очистка истекших хранилищ"""
-    while True:
-        try:
-            logger.info("Запуск периодической очистки истекших хранилищ")
-            cleanup_expired_storages()
-            
-            # Очистка устаревших сессий загрузки
-            cleanup_upload_sessions()
-            
-            # Очистка старых записей логов
-            cleanup_old_logs()
-            
-            # Проверяем каждую минуту
-            time.sleep(60)
-        except Exception as e:
-            logger.error(f"Ошибка в периодической очистке: {str(e)}")
-            # В случае ошибки ждем 30 секунд перед следующей попыткой
-            time.sleep(30)
-
-# Очистка старых записей логов
-def cleanup_old_logs():
-    """Очистка старых записей журнала доступа"""
-    logger.info("Запуск очистки старых записей журнала доступа")
-    
-    async def _cleanup_logs_async():
-        try:
-            # Оставляем записи только за последние 30 дней
-            days_to_keep = 30
-            cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime('%Y-%m-%d %H:%M:%S')
-            
-            async with aiosqlite.connect(DB_PATH) as conn:
-                # Получаем количество записей для удаления
-                cursor = await conn.execute('SELECT COUNT(*) FROM access_log WHERE timestamp < ?', (cutoff_date,))
-                result = await cursor.fetchone()
-                count_to_delete = result[0] if result else 0
-                
-                if count_to_delete > 0:
-                    # Удаляем старые записи
-                    await conn.execute('DELETE FROM access_log WHERE timestamp < ?', (cutoff_date,))
-                    await conn.commit()
-                    logger.info(f"Удалено {count_to_delete} старых записей из журнала доступа")
-                else:
-                    logger.info("Нет устаревших записей для удаления из журнала доступа")
-        except Exception as e:
-            logger.error(f"Ошибка при очистке старых записей логов: {str(e)}")
-    
-    # Используем декоратор run_async напрямую на вызов функции
-    run_async(_cleanup_logs_async)()
-
-# Периодическая очистка истекших сессий загрузки
-def cleanup_upload_sessions():
-    """Очистка устаревших сессий загрузки"""
+@app.route('/<link_id>/delete/<filename>', methods=['POST'])
+@csrf_protected
+def delete_file(link_id, filename):
+    """Удаление файла из временного хранилища"""
     try:
-        current_time = time.time()
-        expired_sessions = []
-        
-        for session_id, session_data in upload_sessions.items():
-            # Если сессия не обновлялась более 30 минут, считаем её устаревшей
-            if current_time - session_data['last_update'] > 1800:  # 30 минут
-                expired_sessions.append(session_id)
-        
-        # Удаляем устаревшие сессии
-        for session_id in expired_sessions:
-            del upload_sessions[session_id]
-            
-        logger.info(f"Очищено {len(expired_sessions)} устаревших сессий загрузки")
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка удаления с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        # Проверяем валидность хранилища
+        if not is_temp_storage_valid(link_id):
+            logger.warning(f"Попытка удаления из недействительного хранилища: {link_id}")
+            # Не возвращаем ошибку, если хранилище уже недействительно, просто логируем
+            return jsonify({'success': True, 'message': 'Хранилище недействительно, файл не удален (или уже удален)'})
+
+        # Безопасное имя файла
+        safe_filename = secure_filename(filename)
+        if not safe_filename:
+            logger.warning(f"Небезопасное имя файла при удалении: {filename}")
+            return jsonify({'error': 'Недопустимое имя файла'}), 400
+
+        # Проверка длины имени файла
+        if len(safe_filename) > 255:
+            logger.warning(f"Слишком длинное имя файла при удалении: {len(safe_filename)}")
+            return jsonify({'error': 'Слишком длинное имя файла'}), 400
+
+        storage_path = get_temp_storage_path(link_id)
+        file_path = os.path.join(storage_path, safe_filename)
+
+        # Проверка безопасности пути
+        real_file_path = os.path.abspath(file_path)
+        real_storage_path = os.path.abspath(storage_path)
+        if not real_file_path.startswith(real_storage_path):
+            logger.error(f"Попытка удаления файла вне хранилища: {file_path}")
+            return jsonify({'error': 'Доступ запрещен'}), 403
+
+        # Удаляем файл, если он существует
+        if os.path.exists(file_path):
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Файл {filename} удален из хранилища {link_id}")
+                    return jsonify({'success': True})
+                else:
+                    logger.warning(f"Попытка удалить не файл: {file_path}")
+                    return jsonify({'error': 'Указанный путь не является файлом'}), 400
+            except OSError as e:
+                logger.error(f"Ошибка при удалении файла {filename} из {link_id}: {str(e)}")
+                return jsonify({'error': 'Ошибка при удалении файла на сервере'}), 500
+        else:
+            # Если файла нет, считаем операцию успешной (возможно, он уже удален)
+            logger.info(f"Файл {filename} не найден для удаления в {link_id} (возможно, уже удален)")
+            return jsonify({'success': True, 'message': 'Файл не найден'})
+
     except Exception as e:
-        logger.error(f"Ошибка при очистке сессий загрузки: {str(e)}")
+        error_message = handle_error(e, log_message=f"Критическая ошибка при удалении файла {filename} из {link_id}")
+        return jsonify({'error': error_message}), 500
 
-# Обработчик ошибки 404 (не найдено)
-@app.errorhandler(404)
-def page_not_found(e):
-    """Обработчик ошибки 404"""
-    return "Запрашиваемая страница не найдена", 404
+@app.route('/<link_id>/delete-all', methods=['POST'])
+@csrf_protected
+def delete_all_files(link_id):
+    """Удаление всего временного хранилища"""
+    try:
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка удаления всего хранилища с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
 
-# Обработчик ошибки 500 (внутренняя ошибка сервера)
-@app.errorhandler(500)
-def internal_server_error(e):
-    """Обработчик ошибки 500"""
-    logger.error(f"Внутренняя ошибка сервера: {str(e)}")
-    return "Произошла внутренняя ошибка сервера", 500
+        storage_path = get_temp_storage_path(link_id)
 
-# Обработчик ошибки 405 (метод не разрешен)
-@app.errorhandler(405)
-def method_not_allowed(e):
-    """Обработчик ошибки 405"""
-    return "Метод не разрешен", 405
+        # Проверка безопасности пути
+        real_storage_path = os.path.abspath(storage_path)
+        real_base_dir = os.path.abspath(TEMP_STORAGE_DIR)
+        if not real_storage_path.startswith(real_base_dir) or real_storage_path == real_base_dir:
+            logger.error(f"Попытка удаления директории вне {TEMP_STORAGE_DIR}: {storage_path}")
+            return jsonify({'error': 'Доступ запрещен'}), 403
 
-# Обработчик ошибки 403 (доступ запрещен)
-@app.errorhandler(403)
-def forbidden(e):
-    """Обработчик ошибки 403"""
-    return "Доступ запрещен", 403
+        # Удаляем директорию хранилища, если она существует
+        if os.path.exists(storage_path):
+            try:
+                shutil.rmtree(storage_path)
+                logger.info(f"Хранилище {link_id} полностью удалено")
+            except OSError as e:
+                logger.error(f"Ошибка при удалении хранилища {link_id}: {str(e)}")
+                return jsonify({'error': 'Ошибка при удалении хранилища на сервере'}), 500
+
+        # Удаляем запись из базы данных асинхронно
+        @run_async
+        async def remove_link_from_db():
+            try:
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                    await conn.commit()
+                    logger.info(f"Запись о хранилище {link_id} удалена из БД")
+            except Exception as e:
+                logger.error(f"Ошибка при удалении записи о хранилище {link_id} из БД: {str(e)}")
+
+        try:
+            remove_link_from_db()
+        except Exception as e:
+            # Логируем ошибку, но не прерываем основной ответ
+             logger.error(f"Ошибка при запуске асинхронного удаления записи из БД для {link_id}: {str(e)}")
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        error_message = handle_error(e, log_message=f"Критическая ошибка при удалении хранилища {link_id}")
+        return jsonify({'error': error_message}), 500
+
+@app.route('/<link_id>/download-multiple', methods=['POST'])
+@csrf_protected
+def download_multiple_files(link_id):
+    """Скачивание нескольких файлов в виде ZIP-архива"""
+    try:
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка скачивания архива с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        # Проверяем валидность хранилища
+        if not is_temp_storage_valid(link_id):
+            logger.warning(f"Попытка скачивания архива из недействительного хранилища: {link_id}")
+            return jsonify({'error': 'Хранилище недействительно или срок его действия истек'}), 404
+
+        # Получаем список файлов из JSON-тела запроса
+        data = request.get_json()
+        if not data or 'files' not in data or not isinstance(data['files'], list):
+            logger.warning(f"Некорректный запрос на скачивание архива для {link_id}")
+            return jsonify({'error': 'Некорректный формат запроса'}), 400
+
+        filenames = data['files']
+        if not filenames:
+            return jsonify({'error': 'Не выбраны файлы для скачивания'}), 400
+
+        storage_path = get_temp_storage_path(link_id)
+        memory_file = BytesIO()
+
+        # Создаем ZIP-архив в памяти
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            added_files_count = 0
+            for filename in filenames:
+                # Безопасное имя файла
+                safe_filename = secure_filename(filename)
+                if not safe_filename:
+                    logger.warning(f"Пропуск небезопасного имени файла при архивации: {filename}")
+                    continue
+
+                # Проверка длины имени файла
+                if len(safe_filename) > 255:
+                    logger.warning(f"Пропуск слишком длинного имени файла при архивации: {len(safe_filename)}")
+                    continue
+
+                file_path = os.path.join(storage_path, safe_filename)
+
+                # Проверка безопасности пути
+                real_file_path = os.path.abspath(file_path)
+                real_storage_path = os.path.abspath(storage_path)
+                if not real_file_path.startswith(real_storage_path):
+                    logger.error(f"Попытка доступа к файлу вне хранилища при архивации: {file_path}")
+                    continue # Пропускаем файл
+
+                # Проверяем существование и тип файла
+                if os.path.exists(file_path) and os.path.isfile(file_path):
+                    try:
+                        zf.write(file_path, safe_filename)
+                        added_files_count += 1
+                    except Exception as e:
+                        logger.error(f"Ошибка при добавлении файла {safe_filename} в архив для {link_id}: {str(e)}")
+                else:
+                    logger.warning(f"Файл {safe_filename} не найден или не является файлом в {link_id}")
+
+        # Если ни один файл не был добавлен, возвращаем ошибку
+        if added_files_count == 0:
+            logger.warning(f"Ни один файл не был добавлен в архив для {link_id}")
+            return jsonify({'error': 'Не удалось добавить файлы в архив (возможно, они не существуют)'}), 404
+
+        memory_file.seek(0)
+        archive_name = f"files_{link_id}.zip"
+
+        # Отправляем ZIP-архив
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=archive_name
+        )
+
+    except Exception as e:
+        error_message = handle_error(e, log_message=f"Критическая ошибка при создании архива для {link_id}")
+        return jsonify({'error': error_message}), 500
+
+@app.route('/<link_id>/set-theme', methods=['POST'])
+@csrf_protected
+async def set_theme(link_id):
+    """Установка темы для пользователя"""
+    try:
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        # Получаем user_id из базы
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+            result = await cursor.fetchone()
+            user_id = result[0] if result else None
+
+        if not user_id:
+            return jsonify({'error': 'Пользователь не найден для этого хранилища'}), 404
+
+        # Получаем тему из запроса
+        data = request.get_json()
+        theme = data.get('theme')
+
+        if theme not in ['light', 'dark']:
+            return jsonify({'error': 'Недопустимое значение темы'}), 400
+
+        # Сохраняем тему в БД
+        success = await set_user_theme_async(user_id, theme)
+
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'error': 'Не удалось сохранить тему'}), 500
+
+    except Exception as e:
+        error_message = handle_error(e, log_message=f"Ошибка при установке темы для {link_id}")
+        return jsonify({'error': error_message}), 500
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных

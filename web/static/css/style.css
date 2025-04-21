@@ -109,12 +109,31 @@ header h1 {
     background-color: var(--success-color);
     color: white;
     padding: 8px;
+    width: 36px;
+    height: 36px;
+    justify-content: center;
 }
 
 .btn-delete {
     background-color: var(--danger-color);
     color: white;
     padding: 8px;
+    width: 36px;
+    height: 36px;
+    justify-content: center;
+}
+
+.btn-preview {
+    background-color: var(--info-color);
+    color: white;
+    padding: 8px;
+    width: 36px;
+    height: 36px;
+    justify-content: center;
+}
+
+.btn-preview:hover {
+    background-color: var(--info-hover-color);
 }
 
 .files-list {
@@ -137,165 +156,21 @@ th, td {
 
 th {
     background-color: var(--secondary-color);
-    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 1;
 }
 
 tr:hover {
-    background-color: var(--secondary-color);
+    background-color: #f1f1f1;
 }
 
 footer {
-    margin-top: 50px;
+    text-align: center;
+    margin-top: 40px;
     padding: 20px 0;
-    text-align: center;
-    color: #666;
+    color: #777;
     border-top: 1px solid var(--border-color);
-}
-
-/* Styles for file preview functionality */
-
-.preview-modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.85);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
-    opacity: 0;
-    visibility: hidden;
-    transition: all 0.3s ease;
-}
-
-.preview-modal.active {
-    opacity: 1;
-    visibility: visible;
-}
-
-.preview-content {
-    max-width: 90%;
-    max-height: 90%;
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.preview-close {
-    position: absolute;
-    top: -40px;
-    right: 0;
-    background: none;
-    border: none;
-    font-size: 24px;
-    cursor: pointer;
-    color: white;
-    opacity: 0.7;
-    transition: opacity 0.3s ease;
-}
-
-.preview-close:hover {
-    opacity: 1;
-}
-
-.preview-image {
-    max-width: 100%;
-    max-height: 80vh;
-    object-fit: contain;
-    border-radius: 5px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-}
-
-.preview-iframe {
-    width: 80vw;
-    height: 80vh;
-    border: none;
-    border-radius: 5px;
-    background-color: white;
-}
-
-.preview-filename {
-    position: absolute;
-    bottom: -30px;
-    color: white;
-    width: 100%;
-    text-align: center;
-    font-size: 14px;
-    opacity: 0.9;
-}
-
-.preview-controls {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    display: flex;
-    justify-content: space-between;
-    padding: 0 20px;
-}
-
-.preview-control {
-    background: rgba(0, 0, 0, 0.5);
-    color: white;
-    border: none;
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.3s ease;
-}
-
-.preview-control:hover {
-    background: rgba(255, 255, 255, 0.2);
-}
-
-/* Button styles */
-.file-preview-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: none;
-    color: var(--primary-color);
-    font-size: 16px;
-    cursor: pointer;
-    padding: 2px;
-    margin-left: 5px;
-    border-radius: 4px;
-    transition: all 0.2s ease;
-}
-
-.file-preview-button:hover {
-    background-color: rgba(74, 111, 165, 0.1);
-    color: var(--primary-color);
-}
-
-.btn-preview {
-    background-color: var(--info-color);
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 5px;
-    width: 36px;
-    height: 36px;
-}
-
-.btn-preview:hover {
-    background-color: var(--info-hover-color, #138496);
-    transform: translateY(-2px);
-    box-shadow: 0 2px 4px var(--shadow-color);
 }
 
 /* Стили для выравнивания кнопок в таблице файлов */
@@ -303,8 +178,6 @@ footer {
     display: flex;
     gap: 8px;
     align-items: center;
-    justify-content: flex-start;
-    min-width: 120px;
 }
 
 .btn-preview, .btn-download, .btn-delete {
@@ -318,44 +191,6 @@ footer {
     display: flex;
     align-items: center;
     justify-content: center;
-}
-
-/* Loading and error states */
-.preview-loading {
-    color: white;
-    font-size: 18px;
-    text-align: center;
-}
-
-.preview-error {
-    color: white;
-    font-size: 16px;
-    text-align: center;
-    max-width: 400px;
-}
-
-.preview-error i {
-    font-size: 48px;
-    margin-bottom: 20px;
-    color: #f14668;
-}
-
-.preview-error p {
-    margin-bottom: 20px;
-}
-
-/* Text file preview */
-.preview-text {
-    background: white;
-    color: #333;
-    padding: 20px;
-    border-radius: 5px;
-    max-width: 80vw;
-    max-height: 80vh;
-    overflow: auto;
-    font-family: monospace;
-    white-space: pre-wrap;
-    text-align: left;
 }
 
 /* Стили для отображения имен файлов */
@@ -389,30 +224,125 @@ footer {
 
 /* Responsive styles */
 @media (max-width: 768px) {
-    .preview-controls {
+    .container {
         padding: 0 10px;
     }
-    
-    .preview-control {
-        width: 36px;
-        height: 36px;
-        font-size: 14px;
-    }
-    
-    .preview-close {
-        top: -30px;
-        right: 0;
+    header h1 {
         font-size: 20px;
     }
-    
-    .preview-text {
+    #upload-form {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    th, td {
+        padding: 8px 5px;
         font-size: 14px;
-        padding: 10px;
+    }
+    .file-actions {
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+    .btn-download, .btn-delete, .btn-preview {
+        width: 32px;
+        height: 32px;
+        padding: 6px;
+    }
+    .file-name-container {
+        max-width: 150px;
     }
 }
 
-/* Темная тема для кнопок */
+/* Темная тема */
 [data-theme="dark"] {
-    --info-color: #17a2b8;
-    --info-hover-color: #138496;
+    --primary-color: #58a6ff;
+    --secondary-color: #22272e;
+    --text-color: #c9d1d9;
+    --border-color: #444c56;
+    --bg-color: #0d1117;
+    --card-bg: #161b22;
+    --hover-bg: #22272e;
+    --success-color: #3fb950;
+    --danger-color: #f85149;
+    --info-color: #388bfd;
+    --info-hover-color: #58a6ff;
+}
+
+[data-theme="dark"] body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] .storage-info,
+[data-theme="dark"] .file-upload,
+[data-theme="dark"] .files-list {
+    background-color: var(--card-bg);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border-color);
+}
+
+[data-theme="dark"] .storage-progress {
+    background-color: #22272e;
+}
+
+[data-theme="dark"] #file-input {
+    background-color: var(--bg-color);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+[data-theme="dark"] table {
+    color: var(--text-color);
+}
+
+[data-theme="dark"] th, [data-theme="dark"] td {
+    border-color: var(--border-color);
+}
+
+[data-theme="dark"] th {
+    background-color: var(--secondary-color);
+}
+
+[data-theme="dark"] tr:hover {
+    background-color: var(--hover-bg);
+}
+
+[data-theme="dark"] footer {
+    color: #8b949e;
+    border-top-color: var(--border-color);
+}
+
+[data-theme="dark"] .btn-primary {
+    background-color: var(--primary-color);
+    color: #0d1117;
+}
+[data-theme="dark"] .btn-primary:hover {
+    background-color: #79c0ff;
+}
+
+[data-theme="dark"] .btn-download {
+    background-color: var(--success-color);
+    color: #0d1117;
+}
+[data-theme="dark"] .btn-download:hover {
+    background-color: #56d364;
+}
+
+[data-theme="dark"] .btn-delete {
+    background-color: var(--danger-color);
+    color: #0d1117;
+}
+[data-theme="dark"] .btn-delete:hover {
+    background-color: #ff7b72;
+}
+
+[data-theme="dark"] .btn-preview {
+    background-color: var(--info-color);
+    color: #0d1117;
+}
+[data-theme="dark"] .btn-preview:hover {
+    background-color: var(--info-hover-color);
+}
+
+[data-theme="dark"] .file-type-icon {
+    color: var(--primary-color);
 }

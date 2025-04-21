@@ -1,19 +1,18 @@
-/* Styles for file preview functionality */
-
+/* General styles for the preview modal */
 .preview-modal {
     position: fixed;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: rgba(0, 0, 0, 0.85);
+    background-color: rgba(0, 0, 0, 0.85); /* Darker background */
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: 1050; /* Ensure it's above other elements */
     opacity: 0;
     visibility: hidden;
-    transition: all 0.3s ease;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
 }
 
 .preview-modal.active {
@@ -22,73 +21,104 @@
 }
 
 .preview-content {
+    position: relative;
     max-width: 90%;
     max-height: 90%;
-    position: relative;
+    display: flex;
+    flex-direction: column; /* Stack content vertically */
+    align-items: center;
+    justify-content: center;
+    background-color: #333; /* Dark background for content area */
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+    padding: 10px; /* Add some padding */
+}
+
+#previewContainer {
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden; /* Hide overflow */
+    min-height: 300px; /* Minimum height */
 }
 
 .preview-close {
     position: absolute;
-    top: -40px;
-    right: 0;
-    background: none;
+    top: -35px; /* Position above the content box */
+    right: -10px;
+    background: rgba(0, 0, 0, 0.6);
     border: none;
+    color: white;
     font-size: 24px;
     cursor: pointer;
-    color: white;
-    opacity: 0.7;
-    transition: opacity 0.3s ease;
+    width: 35px;
+    height: 35px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s ease;
+    z-index: 10; /* Ensure it's above content */
 }
 
 .preview-close:hover {
-    opacity: 1;
+    background-color: rgba(255, 0, 0, 0.7); /* Red background on hover */
 }
 
 .preview-image {
     max-width: 100%;
-    max-height: 80vh;
+    max-height: 100%; /* Allow image to fill height */
     object-fit: contain;
-    border-radius: 5px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-}
-
-.preview-image.screenshot {
-    max-width: 95%;
-    max-height: 95vh;
-    box-shadow: 0 0 20px rgba(0, 0, 0, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    display: block; /* Remove extra space below image */
+    margin: auto; /* Center image */
 }
 
 .preview-iframe {
-    width: 80vw;
-    height: 80vh;
+    width: 100%;
+    height: 100%;
     border: none;
-    border-radius: 5px;
-    background-color: white;
+    display: block; /* Ensure iframe takes full space */
+}
+
+/* Стили для iframe ViewerJS */
+.preview-viewerjs-iframe {
+    width: 85vw; /* Ширина iframe */
+    height: 85vh; /* Высота iframe */
+    background-color: #fff; /* Белый фон на случай долгой загрузки */
+    border-radius: 5px; /* Небольшое скругление углов */
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3); /* Тень для выделения */
 }
 
 .preview-filename {
     position: absolute;
-    bottom: -30px;
+    bottom: 10px; /* Closer to the bottom */
+    left: 50%;
+    transform: translateX(-50%);
     color: white;
-    width: 100%;
-    text-align: center;
+    background-color: rgba(0, 0, 0, 0.7); /* Background for readability */
+    padding: 5px 15px;
+    border-radius: 15px;
     font-size: 14px;
     opacity: 0.9;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 80%; /* Limit width */
+    z-index: 5; /* Below controls */
 }
 
 .preview-controls {
     position: absolute;
-    left: 0;
-    right: 0;
     top: 50%;
+    left: 10px; /* Position inside the modal */
+    right: 10px;
     transform: translateY(-50%);
     display: flex;
     justify-content: space-between;
-    padding: 0 20px;
+    z-index: 10; /* Above filename */
+    pointer-events: none; /* Allow clicks to pass through */
 }
 
 .preview-control {
@@ -102,510 +132,225 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.3s ease;
+    transition: background-color 0.2s ease;
+    pointer-events: all; /* Make buttons clickable */
 }
 
 .preview-control:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background-color: rgba(255, 255, 255, 0.3);
 }
 
-/* Button styles */
-.file-preview-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: none;
-    color: #4a6fa5;
-    font-size: 16px;
-    cursor: pointer;
-    padding: 2px;
-    margin-left: 5px;
-    border-radius: 4px;
-    transition: all 0.2s ease;
+.preview-control#previewPrev {
+    margin-left: -50px; /* Adjust position */
 }
 
-.file-preview-button:hover {
-    background-color: rgba(74, 111, 165, 0.1);
-    color: #4a6fa5;
+.preview-control#previewNext {
+    margin-right: -50px; /* Adjust position */
 }
 
-.btn-preview {
-    background-color: #17a2b8;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 5px;
-    width: 36px;
-    height: 36px;
-}
-
-.btn-preview:hover {
-    background-color: #138496;
-    opacity: 0.9;
-    transform: translateY(-2px);
-    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-}
-
-/* Loading and error states */
-.preview-loading {
-    color: white;
-    font-size: 18px;
-    text-align: center;
-}
-
+/* Loading and Error states */
+.preview-loading,
 .preview-error {
     color: white;
-    font-size: 16px;
     text-align: center;
-    max-width: 400px;
-}
-
-.preview-error i {
-    font-size: 48px;
-    margin-bottom: 20px;
-    color: #f14668;
-}
-
-.preview-error p {
-    margin-bottom: 20px;
-}
-
-.preview-error i.fa-file-word {
-    color: #2b579a;
-}
-
-.preview-error i.fa-file-excel {
-    color: #217346;
-}
-
-.preview-error i.fa-file-powerpoint {
-    color: #d24726;
-}
-
-.preview-error i.fa-file-archive {
-    color: #f7b731;
-}
-
-.preview-error i.fa-file-database {
-    color: #a4373a;
-}
-
-.preview-error i.fa-file-alt,
-.preview-error i.fa-file-document {
-    color: #5f6368;
-}
-
-.preview-error .pdf-actions {
-    display: flex;
-    gap: 10px;
-    justify-content: center;
-    margin-top: 20px;
-}
-
-.preview-error .pdf-actions .btn {
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-size: 14px;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    transition: all 0.3s;
-}
-
-.preview-error .pdf-actions .btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-}
-
-.preview-error .pdf-actions .btn-primary {
-    background-color: #4a6fa5;
-    color: white;
-}
-
-.preview-error .pdf-actions .btn-primary:hover {
-    background-color: #3b5a84;
-}
-
-.preview-error .pdf-actions .btn-success {
-    background-color: #28a745;
-    color: white;
-}
-
-.preview-error .pdf-actions .btn-success:hover {
-    background-color: #218838;
-}
-
-/* Text file preview */
-.preview-text {
-    background: white;
-    color: #333;
-    padding: 20px;
-    border-radius: 5px;
-    max-width: 80vw;
-    max-height: 80vh;
-    overflow: auto;
-    font-family: "Consolas", "Monaco", "Lucida Console", monospace;
-    white-space: pre-wrap;
-    text-align: left;
-    line-height: 1.5;
-    font-size: 14px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-}
-
-/* Syntax highlighting styles */
-.preview-text .keyword { color: #0000ff; }
-.preview-text .string { color: #a31515; }
-.preview-text .comment { color: #008000; }
-.preview-text .number { color: #09885a; }
-.preview-text .operator { color: #000000; }
-
-/* Стили для предпросмотра Office документов */
-.preview-document {
-    background-color: white;
-    width: 80vw;
-    max-width: 1000px;
-    max-height: 80vh;
-    overflow: auto;
-    border-radius: 5px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-}
-
-/* Стили для Word */
-.preview-word .word-content {
     padding: 40px;
-    font-family: 'Calibri', 'Arial', sans-serif;
-    line-height: 1.5;
-    color: #333;
-}
-
-/* Стили для Excel */
-.excel-tabs {
-    display: flex;
-    overflow-x: auto;
-    background-color: #f5f5f5;
-    border-bottom: 1px solid #ddd;
-}
-
-.excel-tab {
-    padding: 8px 16px;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    outline: none;
-    position: relative;
-}
-
-.excel-tab.active {
-    font-weight: bold;
-    color: #2b579a;
-}
-
-.excel-tab.active::after {
-    content: '';
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    background-color: #2b579a;
-}
-
-.excel-sheet {
-    border-collapse: collapse;
-    width: 100%;
-}
-
-.excel-sheet th, .excel-sheet td {
-    border: 1px solid #ddd;
-    padding: 6px;
-    text-align: left;
-    font-size: 14px;
-}
-
-.excel-sheet th {
-    background-color: #f2f2f2;
-    font-weight: bold;
-}
-
-/* Стили для PowerPoint */
-.pptx-container {
-    width: 100%;
-    background-color: #212121;
-    text-align: center;
-    padding: 20px;
-}
-
-.pptx-slide {
-    margin: 0 auto;
-    max-width: 100%;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
-}
-
-.pptx-navigation {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 20px;
-    background-color: #f5f5f5;
-    border-top: 1px solid #ddd;
-}
-
-.pptx-nav-btn {
-    background-color: #d24726;
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 14px;
-}
-
-.pptx-nav-btn:hover {
-    background-color: #c2381e;
-}
-
-.pptx-slide-number {
-    font-size: 14px;
-    color: #666;
-}
-
-/* Улучшенные стили для PDF */
-.preview-pdf {
-    width: 85vw;
-    height: 85vh;
-    max-width: 1200px;
     display: flex;
     flex-direction: column;
-}
-
-.pdf-canvas {
-    max-width: 100%;
-    margin: 0 auto;
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-}
-
-.pdf-navigation {
-    display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 10px 20px;
-    background-color: #f5f5f5;
-    border-top: 1px solid #ddd;
-    margin-top: auto;
-}
-
-.pdf-prev-btn, .pdf-next-btn {
-    background-color: #4a6fa5;
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-}
-
-.pdf-prev-btn:hover, .pdf-next-btn:hover {
-    background-color: #3b5a84;
-}
-
-.pdf-page-info {
-    font-size: 14px;
-    color: #666;
-}
-
-.pdf-download-btn {
-    background-color: #28a745;
-    color: white;
-    text-decoration: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-}
-
-.pdf-download-btn:hover {
-    background-color: #218838;
-    color: white;
-}
-
-/* Стили для Office Viewer */
-.office-viewer-iframe {
+    justify-content: center;
     width: 100%;
-    height: 600px;
-    border: none;
+    height: 100%;
+    min-height: 200px; /* Минимальная высота для видимости */
+    background-color: rgba(51, 51, 51, 0.8); /* Полупрозрачный фон */
+    border-radius: 5px;
+}
+
+.preview-loading i,
+.preview-error i {
+    font-size: 3em;
+    margin-bottom: 15px;
     display: block;
 }
 
-.office-actions {
-    display: flex;
-    gap: 10px;
-    justify-content: center;
+.preview-error .btn {
     margin-top: 20px;
 }
 
-.office-actions .btn {
-    padding: 8px 16px;
-    border-radius: 4px;
+/* Text preview styles */
+.preview-text {
+    background-color: #f8f9fa; /* Light background for text */
+    color: #212529; /* Dark text */
+    padding: 20px;
+    border-radius: 5px;
+    max-width: 100%;
+    max-height: 100%;
+    overflow: auto;
+    font-family: 'Courier New', Courier, monospace;
+    white-space: pre-wrap; /* Wrap long lines */
+    word-wrap: break-word; /* Break long words */
     font-size: 14px;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    transition: all 0.3s;
+    text-align: left;
+    box-sizing: border-box; /* Include padding in width/height */
 }
 
-.office-actions .btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-}
-
-.office-actions .btn-primary {
-    background-color: #4a6fa5;
-    color: white;
-}
-
-.office-actions .btn-primary:hover {
-    background-color: #3b5a84;
-}
-
-.office-actions .btn-secondary {
-    background-color: #6c757d;
-    color: white;
-}
-
-.office-actions .btn-secondary:hover {
-    background-color: #5a6268;
-}
-
-/* Стили для предпросмотра Office документов */
-.office-preview-container {
-    display: flex;
-    padding: 30px;
-    background-color: white;
+/* Стили для предпросмотра документов (общие для PDF и iframe) */
+.preview-document {
+    background-color: #555; /* Darker background for document container */
     width: 100%;
     height: 100%;
-    border-radius: 5px;
-    align-items: center;
+    overflow: auto; /* Allow scrolling within the document container if needed */
+    display: flex; /* Use flex for centering content like loading/error */
     flex-direction: column;
-    text-align: center;
-}
-
-.office-preview-icon {
-    margin-bottom: 20px;
-}
-
-.office-preview-icon i.fa-file-word {
-    color: #2b579a;
-}
-
-.office-preview-icon i.fa-file-excel {
-    color: #217346;
-}
-
-.office-preview-icon i.fa-file-powerpoint {
-    color: #d24726;
-}
-
-.office-preview-info h3 {
-    margin-bottom: 15px;
-    color: #333;
-    font-size: 24px;
-}
-
-.office-preview-info p {
-    margin-bottom: 20px;
-    color: #666;
-}
-
-.office-preview-actions {
-    display: flex;
-    gap: 15px;
-    justify-content: center;
-    margin-bottom: 25px;
-}
-
-.office-preview-actions .btn {
-    padding: 10px 20px;
-    border-radius: 4px;
-    font-size: 16px;
-    text-decoration: none;
-    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    transition: all 0.3s;
 }
 
-.office-preview-actions .btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+/* Стили для iframe предпросмотра (Office - если используется как fallback) */
+.preview-office-iframe {
+    background-color: white; /* Ensure white background */
 }
 
-.office-preview-actions .btn-primary {
-    background-color: #4a6fa5;
-    color: white;
-}
-
-.office-preview-actions .btn-primary:hover {
-    background-color: #3b5a84;
-}
-
-.office-preview-actions .btn-secondary {
-    background-color: #6c757d;
-    color: white;
-}
-
-.office-preview-actions .btn-secondary:hover {
-    background-color: #5a6268;
-}
-
-.office-preview-message {
-    max-width: 500px;
-    margin: 0 auto;
-    padding: 15px;
-    background-color: #f8f9fa;
+/* --- Стили для DOCX, Excel, PPTX и PDF Embed --- */
+.docx-wrapper, .excel-wrapper, .pptx-wrapper, .preview-pdf-embed {
+    width: 80vw;  /* Ширина как у iframe по умолчанию */
+    height: 80vh; /* Высота как у iframe по умолчанию */
+    overflow: auto; /* Включаем прокрутку, если контент больше */
+    background-color: white; /* Белый фон по умолчанию */
+    padding: 0; /* Убираем padding для embed */
+    box-sizing: border-box;
     border-radius: 5px;
-    border-left: 5px solid #4a6fa5;
+    border: none; /* Убираем рамку для embed */
+    display: block; /* Убедимся, что embed ведет себя как блок */
 }
 
-.office-preview-message p {
-    margin: 0;
-    color: #555;
-    font-size: 14px;
-    line-height: 1.5;
+/* Специфичный фон для PDF */
+.preview-pdf-embed {
+    background-color: #525659; /* Темный фон для области PDF */
 }
+
+/* Стили для DOCX (docx-preview обычно генерирует свои стили, но можно переопределить) */
+.docx-wrapper {
+    padding: 15px; /* Возвращаем padding для docx */
+    /* Специфичные стили для DOCX, если нужны */
+}
+/* Пример переопределения стилей docx-preview */
+.docx-wrapper .docx-paragraph {
+    margin-bottom: 1em;
+}
+
+/* Стили для таблиц Excel */
+.excel-wrapper {
+    padding: 15px; /* Возвращаем padding для excel */
+}
+.excel-wrapper table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+    margin-bottom: 1em; /* Отступ между таблицами, если их несколько */
+}
+.excel-wrapper th, .excel-wrapper td {
+    border: 1px solid #ccc;
+    padding: 4px 6px;
+    text-align: left;
+    vertical-align: top;
+    white-space: normal; /* Разрешаем перенос текста в ячейках */
+}
+.excel-wrapper th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+    position: sticky; /* Попытка закрепить заголовок */
+    top: 0;
+    z-index: 1;
+}
+
+/* Стили для PPTX (pptx2html) */
+.pptx-wrapper {
+    background-color: #f0f0f0; /* Светло-серый фон для презентаций */
+    padding: 15px; /* Возвращаем padding для pptx */
+}
+/* Стили для слайдов, генерируемых pptx2html (могут отличаться) */
+.pptx-wrapper .slide {
+    border: 1px solid #ccc;
+    margin: 10px auto; /* Центрируем слайды */
+    background-color: white;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    max-width: 100%; /* Ограничиваем ширину слайда */
+    height: auto; /* Позволяем высоте подстраиваться */
+}
+/* --- Конец новых стилей --- */
 
 /* Responsive styles */
 @media (max-width: 768px) {
-    .preview-controls {
-        padding: 0 10px;
+    .preview-content {
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: 0;
     }
-    
-    .preview-control {
-        width: 36px;
-        height: 36px;
-        font-size: 14px;
-    }
-    
+
     .preview-close {
-        top: -30px;
-        right: 0;
-        font-size: 20px;
+        top: 5px;
+        right: 5px;
+        width: 30px;
+        height: 30px;
+        font-size: 18px;
+    }
+
+    .preview-filename {
+        bottom: 5px;
+        font-size: 12px;
+        padding: 3px 10px;
+        max-width: 90%;
+    }
+
+    .preview-controls {
+        padding: 0 5px;
+    }
+
+    .preview-control {
+        width: 35px;
+        height: 35px;
     }
     
+    .preview-control#previewPrev {
+        margin-left: -40px; 
+    }
+
+    .preview-control#previewNext {
+        margin-right: -40px;
+    }
+
     .preview-text {
-        font-size: 14px;
+        font-size: 12px;
         padding: 10px;
+    }
+
+    /* Адаптация iframe ViewerJS */
+    .preview-viewerjs-iframe {
+        width: 95vw;
+        height: 80vh;
+    }
+
+    /* Адаптация iframe Office */
+    .preview-office-iframe {
+        width: 95vw;
+        height: 80vh;
+    }
+
+    /* Адаптация новых контейнеров и PDF embed */
+    .docx-wrapper, .excel-wrapper, .pptx-wrapper, .preview-pdf-embed {
+        width: 95vw;  /* Увеличиваем ширину на мобильных */
+        height: 85vh; /* Увеличиваем высоту на мобильных */
+        padding: 10px; /* Добавляем небольшой padding для документов */
+        font-size: 12px;
+    }
+    .preview-pdf-embed {
+        padding: 0; /* Убираем padding для embed */
+    }
+    .excel-wrapper table {
+        font-size: 10px;
+    }
+    .excel-wrapper th, .excel-wrapper td {
+        padding: 3px 4px;
     }
 }
