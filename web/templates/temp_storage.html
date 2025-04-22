@@ -2,7 +2,7 @@
 <html lang="ru" data-theme="{{ theme }}">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, maximum-scale=1.0, user-scalable=no">
     <meta name="csrf-token" content="{{ csrf_token }}">
     <meta name="theme-color" content="#4a6fa5">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -17,7 +17,7 @@
     
     <script src="{{ url_for('static', filename='js/preview.js') }}" defer></script>
     <style>
-        /* ...existing code... */
+        /* Если здесь есть стили для .docx-wrapper, .excel-wrapper, .pptx-wrapper, их нужно удалить */
     </style>
 </head>
 <body>
@@ -69,6 +69,20 @@
                            class="btn btn-download" title="Скачать">
                             <i class="fas fa-download"></i>
                         </a>
+                        {% set ext = file.name.split('.')[-1]|lower %}
+                        {% set non_office_previewable = [
+                            'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
+                            'pdf',
+                            'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
+                            'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
+                            'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
+                            'tex', 'bib', 'log', 'diff', 'patch'
+                        ] %}
+                        {% if ext in non_office_previewable %}
+                        <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                        {% endif %}
                         <button class="btn btn-delete" 
                                 onclick="deleteFile('{{ file.name }}')" 
                                 title="Удалить">

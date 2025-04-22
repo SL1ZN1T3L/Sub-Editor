@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 import html
 import hashlib
 from collections import defaultdict
+import traceback  # Добавляем импорт traceback
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -580,9 +581,11 @@ async def set_user_theme_async(user_id, theme):
                                 ?))''', 
                      (user_id, theme, user_id, DEFAULT_LINES_TO_KEEP))
             await conn.commit()
+            logger.info(f"Тема '{theme}' успешно установлена для пользователя {user_id}")  # Добавлено логирование успеха
             return True
     except Exception as e:
-        logger.error(f"Ошибка при установке темы пользователя: {str(e)}")
+        # Логируем конкретную ошибку базы данных
+        logger.error(f"Ошибка базы данных при установке темы для пользователя {user_id}: {str(e)}", exc_info=True)
         return False
 
 def set_user_theme(user_id, theme):
@@ -1429,27 +1432,40 @@ def download_multiple_files(link_id):
 
 @app.route('/<link_id>/set-theme', methods=['POST'])
 @csrf_protected
+@run_async  # Добавляем декоратор для асинхронного выполнения
 async def set_theme(link_id):
     """Установка темы для пользователя"""
     try:
         # Проверка на безопасность link_id
         if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка установки темы с недействительным link_id: {link_id}")  # Добавлено логирование
             return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
 
         # Получаем user_id из базы
+        user_id = None  # Инициализируем user_id
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
-            result = await cursor.fetchone()
-            user_id = result[0] if result else None
+            try:
+                cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+                result = await cursor.fetchone()
+                user_id = result[0] if result else None
+            except Exception as db_err:
+                logger.error(f"Ошибка при получении user_id для link_id {link_id}: {db_err}", exc_info=True)
+                return jsonify({'error': 'Ошибка при доступе к базе данных'}), 500
 
         if not user_id:
+            logger.warning(f"Пользователь не найден для link_id {link_id} при попытке установки темы")  # Добавлено логирование
             return jsonify({'error': 'Пользователь не найден для этого хранилища'}), 404
 
         # Получаем тему из запроса
         data = request.get_json()
+        if not data:
+            logger.warning(f"Пустой JSON или не JSON запрос для установки темы link_id {link_id}")  # Добавлено логирование
+            return jsonify({'error': 'Неверный формат запроса'}), 400
+
         theme = data.get('theme')
 
         if theme not in ['light', 'dark']:
+            logger.warning(f"Недопустимое значение темы '{theme}' для link_id {link_id}")  # Добавлено логирование
             return jsonify({'error': 'Недопустимое значение темы'}), 400
 
         # Сохраняем тему в БД
@@ -1458,11 +1474,14 @@ async def set_theme(link_id):
         if success:
             return jsonify({'success': True})
         else:
+            # Ошибка уже залогирована в set_user_theme_async
             return jsonify({'error': 'Не удалось сохранить тему'}), 500
 
     except Exception as e:
-        error_message = handle_error(e, log_message=f"Ошибка при установке темы для {link_id}")
-        return jsonify({'error': error_message}), 500
+        # Логируем полный traceback для неожиданных ошибок
+        error_message = f"Неожиданная ошибка при установке темы для {link_id}: {str(e)}"
+        logger.error(error_message, exc_info=True)  # Используем exc_info=True для полного стека
+        return jsonify({'error': "Внутренняя ошибка сервера при сохранении темы"}), 500
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных

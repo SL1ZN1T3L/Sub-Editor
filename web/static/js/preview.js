@@ -114,10 +114,6 @@ class FilePreviewManager {
         const previewableTypes = [
             'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
             'pdf',
-            'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'rtf',
-            'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm',
-            'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm',
-            'odt', 'ods', 'odp',
             'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
             'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
             'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
@@ -135,7 +131,21 @@ class FilePreviewManager {
     showPreview(filename) {
         this.currentIndex = this.previewableFiles.indexOf(filename);
         if (this.currentIndex === -1) {
-            console.error(`Файл ${filename} не найден в списке предпросматриваемых файлов.`);
+            // Если файл не найден в списке предпросматриваемых, но кнопка есть,
+            // возможно, это Office файл, для которого предпросмотр теперь отключен.
+            // Показываем сообщение об ошибке.
+            this.showPreviewError('Предпросмотр для этого типа файла недоступен. Вы можете скачать файл.');
+            this.previewModal.classList.add('active'); // Показываем модальное окно с ошибкой
+            // Устанавливаем имя файла в заголовке ошибки
+            const errorFilenameElement = this.previewModal.querySelector('.preview-filename');
+            if (errorFilenameElement) {
+                errorFilenameElement.textContent = filename;
+            }
+            // Скрываем кнопки навигации
+            const controls = this.previewModal.querySelector('.preview-controls');
+            if (controls) {
+                controls.style.display = 'none';
+            }
             return;
         }
 
@@ -146,6 +156,11 @@ class FilePreviewManager {
     // Update the preview content based on current index
     updatePreviewContent() {
         const filename = this.previewableFiles[this.currentIndex];
+        // Если filename не определен (например, после удаления файла), выходим
+        if (!filename) {
+            this.closePreview();
+            return;
+        }
 
         this.previewContainer.innerHTML = '<div class="preview-loading"><i class="fas fa-spinner fa-spin"></i> Загрузка...</div>';
         this.previewFilename.textContent = filename;
@@ -155,14 +170,12 @@ class FilePreviewManager {
         const absoluteFileUrl = new URL(fileUrl, window.location.origin).href;
 
         const imageTypes = ['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif'];
-        const officeTypes = [
+        const unsupportedPreviewTypes = [
+            'zip', 'rar', '7z', 'tar', 'gz', 'bz2',
             'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'rtf',
             'xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm',
             'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm',
             'odt', 'ods', 'odp',
-        ];
-        const unsupportedPreviewTypes = [
-            'zip', 'rar', '7z', 'tar', 'gz', 'bz2'
         ];
         const textTypes = [
             'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
@@ -199,23 +212,6 @@ class FilePreviewManager {
             };
             this.previewContainer.innerHTML = '';
             this.previewContainer.appendChild(embed);
-        }
-        else if (officeTypes.includes(ext)) {
-            const viewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(absoluteFileUrl)}`;
-            const iframe = document.createElement('iframe');
-            iframe.className = 'preview-iframe preview-office-iframe';
-            iframe.src = viewerUrl;
-            iframe.setAttribute('allowfullscreen', '');
-            iframe.setAttribute('webkitallowfullscreen', '');
-            iframe.onload = () => {
-                const loadingDiv = this.previewContainer.querySelector('.preview-loading');
-                if (loadingDiv) loadingDiv.style.display = 'none';
-            };
-            iframe.onerror = () => {
-                this.showPreviewError('Не удалось загрузить предпросмотр документа Office.');
-            };
-            this.previewContainer.innerHTML = '<div class="preview-loading"><i class="fas fa-spinner fa-spin"></i> Загрузка предпросмотра Office...</div>';
-            this.previewContainer.appendChild(iframe);
         }
         else if (unsupportedPreviewTypes.includes(ext)) {
             this.showPreviewError('Предпросмотр для этого типа файла недоступен. Вы можете скачать файл.');
@@ -265,19 +261,25 @@ class FilePreviewManager {
 
     // Show error state in preview
     showPreviewError(message = 'Не удалось показать предпросмотр для этого типа файлов') {
-        const filename = this.previewableFiles[this.currentIndex];
-        const downloadUrl = `/${this.linkId}/download/${encodeURIComponent(filename)}?download=true`;
+        let filename = this.previewableFiles[this.currentIndex];
+        let downloadButtonHtml = '';
+        if (filename) {
+            const downloadUrl = `/${this.linkId}/download/${encodeURIComponent(filename)}?download=true`;
+            downloadButtonHtml = `
+                <a href="${downloadUrl}"
+                   class="btn btn-primary" target="_blank" download>
+                   <i class="fas fa-download"></i> Скачать файл
+                </a>`;
+        }
 
         this.previewContainer.innerHTML = `
             <div class="preview-error">
                 <i class="fas fa-exclamation-triangle fa-3x"></i>
                 <p>${message}</p>
-                <a href="${downloadUrl}"
-                   class="btn btn-primary" target="_blank" download>
-                   <i class="fas fa-download"></i> Скачать файл
-                </a>
+                ${downloadButtonHtml}
             </div>
         `;
+        this.previewFilename.textContent = filename || 'Ошибка предпросмотра';
     }
 
     // Show previous file

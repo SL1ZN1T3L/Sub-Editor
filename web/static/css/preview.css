@@ -204,13 +204,8 @@
     align-items: center;
 }
 
-/* Стили для iframe предпросмотра (Office - если используется как fallback) */
-.preview-office-iframe {
-    background-color: white; /* Ensure white background */
-}
-
-/* --- Стили для DOCX, Excel, PPTX и PDF Embed --- */
-.docx-wrapper, .excel-wrapper, .pptx-wrapper, .preview-pdf-embed {
+/* --- Стили для PDF Embed --- */
+.preview-pdf-embed {
     width: 80vw;  /* Ширина как у iframe по умолчанию */
     height: 80vh; /* Высота как у iframe по умолчанию */
     overflow: auto; /* Включаем прокрутку, если контент больше */
@@ -226,57 +221,6 @@
 .preview-pdf-embed {
     background-color: #525659; /* Темный фон для области PDF */
 }
-
-/* Стили для DOCX (docx-preview обычно генерирует свои стили, но можно переопределить) */
-.docx-wrapper {
-    padding: 15px; /* Возвращаем padding для docx */
-    /* Специфичные стили для DOCX, если нужны */
-}
-/* Пример переопределения стилей docx-preview */
-.docx-wrapper .docx-paragraph {
-    margin-bottom: 1em;
-}
-
-/* Стили для таблиц Excel */
-.excel-wrapper {
-    padding: 15px; /* Возвращаем padding для excel */
-}
-.excel-wrapper table {
-    border-collapse: collapse;
-    width: 100%;
-    font-size: 12px;
-    margin-bottom: 1em; /* Отступ между таблицами, если их несколько */
-}
-.excel-wrapper th, .excel-wrapper td {
-    border: 1px solid #ccc;
-    padding: 4px 6px;
-    text-align: left;
-    vertical-align: top;
-    white-space: normal; /* Разрешаем перенос текста в ячейках */
-}
-.excel-wrapper th {
-    background-color: #f2f2f2;
-    font-weight: bold;
-    position: sticky; /* Попытка закрепить заголовок */
-    top: 0;
-    z-index: 1;
-}
-
-/* Стили для PPTX (pptx2html) */
-.pptx-wrapper {
-    background-color: #f0f0f0; /* Светло-серый фон для презентаций */
-    padding: 15px; /* Возвращаем padding для pptx */
-}
-/* Стили для слайдов, генерируемых pptx2html (могут отличаться) */
-.pptx-wrapper .slide {
-    border: 1px solid #ccc;
-    margin: 10px auto; /* Центрируем слайды */
-    background-color: white;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-    max-width: 100%; /* Ограничиваем ширину слайда */
-    height: auto; /* Позволяем высоте подстраиваться */
-}
-/* --- Конец новых стилей --- */
 
 /* Responsive styles */
 @media (max-width: 768px) {
@@ -325,32 +269,13 @@
         padding: 10px;
     }
 
-    /* Адаптация iframe ViewerJS */
-    .preview-viewerjs-iframe {
-        width: 95vw;
-        height: 80vh;
-    }
-
-    /* Адаптация iframe Office */
-    .preview-office-iframe {
-        width: 95vw;
-        height: 80vh;
-    }
-
     /* Адаптация новых контейнеров и PDF embed */
-    .docx-wrapper, .excel-wrapper, .pptx-wrapper, .preview-pdf-embed {
+    .preview-pdf-embed {
         width: 95vw;  /* Увеличиваем ширину на мобильных */
         height: 85vh; /* Увеличиваем высоту на мобильных */
-        padding: 10px; /* Добавляем небольшой padding для документов */
         font-size: 12px;
     }
     .preview-pdf-embed {
         padding: 0; /* Убираем padding для embed */
-    }
-    .excel-wrapper table {
-        font-size: 10px;
-    }
-    .excel-wrapper th, .excel-wrapper td {
-        padding: 3px 4px;
     }
 }
