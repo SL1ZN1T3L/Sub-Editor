@@ -1152,20 +1152,22 @@ def upload_file(link_id):
             logger.warning(f"Неполные данные при загрузке в {link_id}")
             return jsonify({'error': 'Неполные данные запроса'}), 400
 
-        # Безопасное имя файла
-        filename = secure_filename(file.filename)
-        if not filename:
-            logger.warning(f"Небезопасное имя файла при загрузке в {link_id}: {file.filename}")
-            return jsonify({'error': 'Недопустимое имя файла'}), 400
+        # Сохраняем оригинальное имя файла
+        original_filename = file.filename
+        # Базовая проверка безопасности оригинального имени файла
+        # Запрещаем символы, которые могут использоваться для path traversal
+        if not original_filename or '..' in original_filename or '/' in original_filename or '\\' in original_filename:
+             logger.warning(f"Небезопасное оригинальное имя файла при загрузке в {link_id}: {original_filename}")
+             return jsonify({'error': 'Недопустимое имя файла'}), 400
 
-        # Проверка длины имени файла
-        if len(filename) > 255:
-            logger.warning(f"Слишком длинное имя файла при загрузке в {link_id}: {len(filename)}")
+        # Проверка длины оригинального имени файла
+        if len(original_filename) > 255:
+            logger.warning(f"Слишком длинное оригинальное имя файла при загрузке в {link_id}: {len(original_filename)}")
             return jsonify({'error': 'Слишком длинное имя файла'}), 400
 
-        # Проверка разрешенного типа файла
-        if not allowed_file(filename):
-            logger.warning(f"Попытка загрузки файла запрещенного типа в {link_id}: {filename}")
+        # Проверка разрешенного типа файла (используем оригинальное имя)
+        if not allowed_file(original_filename):
+            logger.warning(f"Попытка загрузки файла запрещенного типа в {link_id}: {original_filename}")
             allowed_ext_str = ', '.join(app.config['ALLOWED_EXTENSIONS'])
             return jsonify({'error': f'Тип файла не разрешен. Разрешены только: {allowed_ext_str}'}), 400
 
@@ -1184,28 +1186,32 @@ def upload_file(link_id):
         # Проверка общего лимита хранилища
         chunk_size = file.content_length
         if current_size + total_size > app.config['MAX_STORAGE_SIZE']:
-            logger.warning(f"Превышен лимит хранилища {link_id} при загрузке файла {filename}")
+            logger.warning(f"Превышен лимит хранилища {link_id} при загрузке файла {original_filename}")
             return jsonify({'error': f'Превышен лимит хранилища ({MAX_STORAGE_SIZE_MB} MB)'}), 400
 
         # Проверка максимального размера файла
         if total_size > app.config['MAX_FILE_SIZE']:
-            logger.warning(f"Попытка загрузки слишком большого файла в {link_id}: {filename} ({total_size} байт)")
+            logger.warning(f"Попытка загрузки слишком большого файла в {link_id}: {original_filename} ({total_size} байт)")
             return jsonify({'error': f'Файл слишком большой (макс. {MAX_FILE_SIZE_MB} MB)'}), 413
 
         # Путь к временному файлу для сборки чанков
-        temp_file_path = os.path.join(storage_path, f"{filename}.part_{upload_session_id}")
-        final_file_path = os.path.join(storage_path, filename)
+        temp_file_path = os.path.join(storage_path, f"upload_{upload_session_id}.part")
+        final_file_path = os.path.join(storage_path, original_filename)
 
         # Записываем чанк во временный файл
         try:
             # Используем 'ab' для добавления данных в конец файла
             with open(temp_file_path, 'ab') as f:
-                # Перемещаем указатель на нужную позицию (если нужно, но 'ab' делает это автоматически)
-                # f.seek(chunk_number * app.config['UPLOAD_CHUNK_SIZE']) # Не нужно с 'ab'
                 chunk_data = file.read()
                 f.write(chunk_data)
         except IOError as e:
-            logger.error(f"Ошибка записи чанка {chunk_number} для файла {filename} в {link_id}: {str(e)}")
+            logger.error(f"Ошибка записи чанка {chunk_number} для файла {original_filename} в {link_id}: {str(e)}")
+            # Попытка удалить временный файл при ошибке записи
+            if os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                except OSError as remove_err:
+                    logger.error(f"Не удалось удалить временный файл {temp_file_path} после ошибки записи: {str(remove_err)}")
             return jsonify({'error': 'Ошибка записи файла на сервере'}), 500
 
         # Проверяем, все ли чанки загружены
@@ -1214,7 +1220,7 @@ def upload_file(link_id):
             try:
                 actual_size = os.path.getsize(temp_file_path)
                 if actual_size != total_size:
-                    logger.error(f"Несоответствие размера файла {filename} в {link_id}. Ожидалось: {total_size}, получено: {actual_size}")
+                    logger.error(f"Несоответствие размера файла {original_filename} в {link_id}. Ожидалось: {total_size}, получено: {actual_size}")
                     # Удаляем временный файл
                     try:
                         os.remove(temp_file_path)
@@ -1226,20 +1232,37 @@ def upload_file(link_id):
                 try:
                     # Удаляем старый файл, если он существует (перезапись)
                     if os.path.exists(final_file_path):
-                        os.remove(final_file_path)
-                    os.rename(temp_file_path, final_file_path)
-                    logger.info(f"Файл {filename} успешно собран и сохранен в {link_id}")
+                         # Добавим проверку, не является ли это тем же файлом (маловероятно, но на всякий случай)
+                         if not os.path.samefile(temp_file_path, final_file_path):
+                             os.remove(final_file_path)
+                         else:
+                             # Если временный и конечный файл - это одно и то же (очень маловероятно),
+                             # просто логируем и считаем успешным
+                             logger.warning(f"Попытка переименовать файл сам в себя: {final_file_path}")
+
+                    # Если файлы разные или конечного не существует, переименовываем
+                    if not os.path.exists(final_file_path) or not os.path.samefile(temp_file_path, final_file_path):
+                        os.rename(temp_file_path, final_file_path)
+
+                    logger.info(f"Файл {original_filename} успешно собран и сохранен в {link_id}")
                 except OSError as e:
                     logger.error(f"Ошибка переименования временного файла {temp_file_path} в {final_file_path}: {str(e)}")
                     # Пытаемся удалить временный файл в случае ошибки
-                    try:
-                        os.remove(temp_file_path)
-                    except OSError as remove_err:
-                         logger.error(f"Не удалось удалить временный файл {temp_file_path} после ошибки переименования: {str(remove_err)}")
+                    if os.path.exists(temp_file_path):
+                        try:
+                            os.remove(temp_file_path)
+                        except OSError as remove_err:
+                            logger.error(f"Не удалось удалить временный файл {temp_file_path} после ошибки переименования: {str(remove_err)}")
                     return jsonify({'error': 'Ошибка сохранения файла на сервере'}), 500
 
             except OSError as e:
-                logger.error(f"Ошибка проверки размера или переименования файла {filename} в {link_id}: {str(e)}")
+                logger.error(f"Ошибка проверки размера или переименования файла {original_filename} в {link_id}: {str(e)}")
+                # Попытка удалить временный файл
+                if os.path.exists(temp_file_path):
+                     try:
+                          os.remove(temp_file_path)
+                     except OSError as remove_err:
+                          logger.error(f"Не удалось удалить временный файл {temp_file_path} после ошибки проверки: {str(remove_err)}")
                 return jsonify({'error': 'Ошибка обработки файла на сервере'}), 500
 
         return jsonify({'success': True, 'message': f'Chunk {chunk_number + 1}/{total_chunks} uploaded successfully'}), 200
@@ -1247,6 +1270,13 @@ def upload_file(link_id):
     except Exception as e:
         # Используем handle_error для логирования и безопасного ответа
         error_message = handle_error(e, log_message=f"Критическая ошибка при загрузке файла в {link_id}")
+        # Попытка удалить временный файл при любой критической ошибке
+        # temp_file_path может быть не определен, если ошибка произошла раньше
+        try:
+            if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+                 os.remove(temp_file_path)
+        except Exception as remove_err:
+             logger.error(f"Не удалось удалить временный файл {locals().get('temp_file_path')} после критической ошибки: {remove_err}")
         return jsonify({'error': error_message}), 500
 
 
@@ -1523,7 +1553,7 @@ if __name__ == '__main__':
         
         # Запускаем сервер
         logger.info("Запуск веб-сервера на 0.0.0.0:5000")
-        app.run(host='0.0.0.0', port=5000, threaded=True)
+        app.run(host='0.0.0.0', port=5000, debug=True)
     except Exception as e:
         logger.critical(f"Критическая ошибка при запуске сервера: {str(e)}")
         raise

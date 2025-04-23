@@ -346,3 +346,31 @@ footer {
 [data-theme="dark"] .file-type-icon {
     color: var(--primary-color);
 }
+
+/* New styles for file list and table */
+.file-list {
+    position: relative;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-top: 15px;
+}
+
+.file-table tbody {
+    display: block;
+    max-height: 70vh;
+    overflow-y: auto;
+    width: 100%;
+}
+
+.file-table thead,
+.file-table tbody tr {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+}
+
+.file-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}

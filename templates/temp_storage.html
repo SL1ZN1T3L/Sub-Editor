@@ -59,20 +59,12 @@
             padding: 12px 10px;
             text-align: left;
             background-color: var(--card-bg);
-            position: sticky;
-            top: 0;
-            z-index: 2;
         }
         
         .file-table td {
             padding: 10px 8px;
             border-bottom: 1px solid var(--border-color);
         }
-        
-        /* Удаляем или комментируем правило, убирающее границу у последней строки */
-        /* .file-table tr:last-child td {
-            border-bottom: none;
-        } */
         
         .file-actions {
             display: flex;
@@ -86,12 +78,12 @@
         }
         
         .file-table thead {
-            position: sticky;
-            top: 0;
-            z-index: 1;
             box-shadow: 0 2px 4px var(--shadow-color);
             background-color: var(--card-bg);
             color: var(--text-color);
+            display: table;
+            width: 100%;
+            table-layout: fixed;
         }
         
         .file-table th,
@@ -220,6 +212,11 @@
         }
         .files-list {
             margin-top: 20px;
+            position: relative;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            margin-top: 15px;
+            overflow: hidden;
         }
         
         .select-all-container {
@@ -228,13 +225,17 @@
             border-bottom: 1px solid var(--border-color);
         }
         
-        .file-list {
-            max-height: 80vh; /* Увеличено с 400px */
+        #fileTableBody {
+            display: block;
+            max-height: 70vh;
             overflow-y: auto;
-            position: relative;
-            border: 1px solid var(--border-color);
-            border-radius: 4px;
-            margin-top: 15px;
+            width: 100%;
+        }
+
+        #fileTableBody tr {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
         }
         
         .delete-selected {
@@ -1110,81 +1111,69 @@
                             <i class="fas fa-download"></i> Скачать выбранные
                         </button>
                     </div>
-                    <div class="file-list">
-                        <table class="file-table">
-                            <thead>
-                                <tr>
-                                    <th style="width: 40px;"></th>
-                                    <th>Имя файла</th>
-                                    <th style="width: 150px;">Расширение<br>файла</th> <!-- Увеличено и перенесено -->
-                                    <th style="padding-left: 10px;">Размер</th>
-                                    <th style="padding-left: 10px;">Дата изменения</th>
-                                    <th>Действия</th>
-                                </tr>
-                                <!-- Строка для фильтров -->
-                                <tr class="filter-row">
-                                    <th></th> <!-- Пустая ячейка для чекбокса -->
-                                    <th>
-                                        <input type="text" id="filterFileName" class="filter-input" placeholder="Фильтр по имени" list="fileNameList">
-                                        <datalist id="fileNameList"></datalist>
-                                    </th>
-                                    <th style="width: 150px;"> <!-- Увеличено -->
-                                        <input type="text" id="filterFileExt" class="filter-input" placeholder="Фильтр" list="fileExtList">
-                                        <datalist id="fileExtList"></datalist>
-                                    </th>
-                                    <th></th> <!-- Пустая ячейка для размера -->
-                                    <th></th> <!-- Пустая ячейка для даты -->
-                                    <th></th> <!-- Пустая ячейка для действий -->
-                                </tr>
-                            </thead>
-                            <tbody id="fileTableBody"> <!-- Добавлен ID для tbody -->
-                                {% for file in files %}
-                                <tr class="file-item">
-                                    <td>
-                                        <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
-                                    </td>
-                                    <td class="text-truncate file-name-container" style="max-width: 200px;" title="{{ file.name|e }}">
-                                        <span class="file-name">{{ file.name.rsplit('.', 1)[0]|e }}</span>
-                                    </td>
-                                    <td style="width: 150px; padding-left: 10px;"> <!-- Увеличено -->
-                                        {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
-                                        {{ ext }}
-                                    </td>
-                                    <td style="padding-left: 10px;">{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
-                                    <td style="padding-left: 10px;">{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
-                                    <td>
-                                        <div class="file-actions">
-                                            {% set ext = file.name.split('.')[-1]|lower %}
-                                            {# Обновляем список расширений, исключая Office #}
-                                            {% set previewable_extensions = [
-                                                'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
-                                                'pdf',
-                                                'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
-                                                'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
-                                                'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
-                                                'tex', 'bib', 'log', 'diff', 'patch'
-                                            ] %}
-                                            {% if ext in previewable_extensions %}
-                                            <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
-                                                <i class="fas fa-eye"></i>
-                                            </button>
-                                            {% endif %}
-                                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}"
-                                                class="btn btn-download" title="Скачать" download>
-                                                <i class="fas fa-download"></i>
-                                            </a>
-                                            <button class="btn btn-delete"
-                                                    onclick="deleteFile('{{ file.name|e|escapejs }}')"
-                                                    title="Удалить">
-                                                <i class="fas fa-trash"></i>
-                                            </button>
-                                        </div>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
+                    <table class="file-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 40px;"></th>
+                                <th>Имя файла</th>
+                                <th style="width: 150px;">Расширение<br>файла</th>
+                                <th style="padding-left: 10px; width: 100px;">Размер</th>
+                                <th style="padding-left: 10px; width: 160px;">Дата изменения</th>
+                                <th style="width: 120px;">Действия</th>
+                            </tr>
+                            <tr class="filter-row">
+                                <th></th>
+                                <th>
+                                    <input type="text" id="filterFileName" class="filter-input" placeholder="Фильтр по имени" list="fileNameList">
+                                    <datalist id="fileNameList"></datalist>
+                                </th>
+                                <th style="width: 150px;">
+                                    <input type="text" id="filterFileExt" class="filter-input" placeholder="Фильтр" list="fileExtList">
+                                    <datalist id="fileExtList"></datalist>
+                                </th>
+                                <th style="width: 100px;"></th>
+                                <th style="width: 160px;"></th>
+                                <th style="width: 120px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="fileTableBody">
+                            {% for file in files %}
+                            <tr class="file-item">
+                                <td style="width: 40px;">
+                                    <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
+                                </td>
+                                <td class="text-truncate file-name-container" title="{{ file.name|e }}">
+                                    <span class="file-name">{{ file.name.rsplit('.', 1)[0]|e }}</span>
+                                </td>
+                                <td style="width: 150px; padding-left: 10px;">
+                                    {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
+                                    {{ ext }}
+                                </td>
+                                <td style="padding-left: 10px; width: 100px;">{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
+                                <td style="padding-left: 10px; width: 160px;">{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
+                                <td style="width: 120px;">
+                                    <div class="file-actions">
+                                        {% set ext = file.name.split('.')[-1]|lower %}
+                                        {% if ext in previewable_extensions %}
+                                        <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                        {% endif %}
+                                        <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}"
+                                            class="btn btn-download" title="Скачать" download>
+                                            <i class="fas fa-download"></i>
+                                        </a>
+                                        <button class="btn btn-delete"
+                                                onclick="deleteFile('{{ file.name|e|escapejs }}')"
+                                                title="Удалить">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
