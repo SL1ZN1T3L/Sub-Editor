@@ -1,4 +1,4 @@
-from flask import Flask, send_file, request, render_template, jsonify, session
+from flask import Flask, send_file, request, render_template, jsonify, session, redirect, url_for, send_from_directory
 from flask_session import Session
 import sqlite3
 import aiosqlite
@@ -60,6 +60,11 @@ DB_PATH = os.path.join(BASE_DIR, 'bot_users.db')
 TEMP_STORAGE_DIR = os.path.join(BASE_DIR, 'temp_storage')
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
+
+# Добавляем конфигурацию для статических файлов
+STATIC_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web', 'static')
+app.static_folder = STATIC_FOLDER
+app.static_url_path = '/static'
 
 # Загрузка конфигурации из .env файла
 # Общий лимит хранилища (по умолчанию 500 MB)
@@ -840,6 +845,13 @@ def handle_error(e, default_message="Внутренняя ошибка серв�
     
     # Не показываем чувствительную информацию в ответе клиенту
     return default_message
+
+# Добавляем маршрут для favicon
+@app.route('/favicon.ico')
+def favicon():
+    """Отправка favicon"""
+    return send_from_directory(os.path.join(app.root_path, 'web', 'static', 'web', 'image'),
+                               'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 @app.route('/')
 def index():
