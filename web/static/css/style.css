@@ -250,6 +250,27 @@ footer {
     .file-name-container {
         max-width: 150px;
     }
+    /* Исправление для таблицы файлов на мобильных */
+    .files-list {
+        overflow-x: auto;
+    }
+    .file-table,
+    .file-table thead,
+    .file-table tbody,
+    .file-table tr,
+    .file-table th,
+    .file-table td {
+        display: revert !important;
+        width: revert !important;
+        max-width: revert !important;
+        table-layout: auto !important;
+    }
+    .file-table tbody {
+        display: revert !important;
+        max-height: revert !important;
+        overflow-y: revert !important;
+        width: revert !important;
+    }
 }
 
 /* Темная тема */
