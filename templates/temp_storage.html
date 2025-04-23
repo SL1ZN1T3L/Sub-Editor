@@ -112,6 +112,11 @@
             text-overflow: ellipsis;
             vertical-align: top; /* Align text to top */
         }
+
+        h2 {
+            font-size: 2rem;
+            padding-left: 10px;
+        }
         
         .theme-switch {
             position: fixed;
@@ -734,8 +739,13 @@
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
+                padding-left: 10px;
             }
-            
+
+            .h2, h2 {
+            font-size: 18px;
+            }
+
             .page-title h1 {
                 font-size: 24px;
             }
