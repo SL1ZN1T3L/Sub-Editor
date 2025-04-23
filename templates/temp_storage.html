@@ -585,7 +585,7 @@
         }
 
         /* Стили для кнопки "Поделиться" */
-        .share-button {
+        .page-share-trigger {
             position: fixed;
             bottom: 20px;
             right: 20px;
@@ -598,14 +598,14 @@
             font-size: 20px;
             cursor: pointer;
             box-shadow: 0 4px 8px var(--shadow-color);
-            z-index: 100;
+            z-index: 999;
             display: flex;
             align-items: center;
             justify-content: center;
             transition: all 0.3s ease;
         }
         
-        .share-button:hover {
+        .page-share-trigger:hover {
             transform: translateY(-2px);
             box-shadow: 0 6px 12px var(--shadow-color);
         }
@@ -799,7 +799,7 @@
                 padding: 15px;
             }
             
-            .share-button {
+            .page-share-trigger {
                 width: 40px;
                 height: 40px;
                 font-size: 16px;
@@ -833,7 +833,7 @@
             outline-offset: 2px;
         }
         
-        .btn:active, .share-button:active {
+        .btn:active, .page-share-trigger:active {
             transform: scale(0.95);
         }
 
@@ -1180,7 +1180,7 @@
     </div>
 
     <!-- Добавляем кнопку "Поделиться" -->
-    <button class="share-button" id="shareButton" title="Поделиться ссылкой">
+    <button class="page-share-trigger" id="pageShareTrigger" aria-label="Поделиться ссылкой">
         <i class="fas fa-share-alt"></i>
     </button>
     
@@ -2156,7 +2156,7 @@
         }
 
         // Обработчики для функции "Поделиться"
-        document.getElementById('shareButton').addEventListener('click', function() {
+        document.getElementById('pageShareTrigger').addEventListener('click', function() {
             const shareModal = document.getElementById('shareModal');
             const shareLinkInput = document.getElementById('shareLinkInput');
             
