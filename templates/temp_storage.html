@@ -57,9 +57,16 @@
         }
         
         .file-table th {
-            padding: 12px 10px;
+            padding: 12px 10px; /* Оставляем padding по умолчанию */
             text-align: left;
-            background-color: var(--card-bg);
+        }
+
+        /* Стили для основной строки заголовков */
+        .file-table thead tr:first-child th {
+            background-color: var(--card-bg); /* Фон для перекрытия контента */
+            position: sticky; /* Делаем заголовки липкими */
+            top: 0; /* Прилипаем к верху контейнера */
+            z-index: 2; /* Устанавливаем z-index выше, чем у строки фильтров */
         }
         
         .file-table td {
@@ -78,18 +85,12 @@
             color: var(--text-color);
         }
         
-        .file-table thead,
-        .file-table tbody {
-            display: table;
-            width: 100%;
-            table-layout: fixed;
-        }
-        
         .file-table th,
         .file-table td {
             border-color: var(--border-color);
             vertical-align: top; 
             padding: 12px 8px;
+            word-wrap: break-word; /* Добавлено для переноса длинных слов */
         }
         
         .file-table tr:hover {
@@ -109,6 +110,13 @@
             padding-left: 0;
             padding-right: 0;
             text-align: center;
+        }
+
+        .file-table th:nth-child(2),
+        .file-table td:nth-child(2) {
+             overflow: hidden;
+             text-overflow: ellipsis;
+             white-space: nowrap; /* Предотвращаем перенос имени файла */
         }
 
         .file-table th:nth-child(3), 
@@ -264,19 +272,6 @@
             padding-bottom: 10px;
             padding-left: 10px;
             border-bottom: 1px solid var(--border-color);
-        }
-        
-        #fileTableBody {
-            display: block;
-            max-height: 70vh;
-            overflow-y: auto;
-            width: 100%;
-        }
-
-        #fileTableBody tr {
-            display: table;
-            width: 100%;
-            table-layout: fixed;
         }
         
         .delete-selected {
@@ -872,12 +867,6 @@
                 max-width: revert !important;
                 table-layout: auto !important;
             }
-            #fileTableBody {
-                display: revert !important;
-                max-height: revert !important;
-                overflow-y: revert !important;
-                width: revert !important;
-            }
         }
         
         /* Улучшения для доступности */
@@ -1057,14 +1046,29 @@
             color: var(--text-color);
             font-size: 12px;
         }
-        
-        .filter-row th {
+        .file-table thead {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        }
+        /* Стили для строки фильтров */
+        .file-table thead tr.filter-row th {
             padding-top: 5px;
             padding-bottom: 10px;
-            position: static; 
+            position: sticky; /* Делаем строку фильтров липкой */
+            top: 48px; /* Располагаем под основной строкой заголовков (подбираемое значение) */
+            background-color: var(--card-bg); /* Фон, чтобы контент не просвечивал */
+            z-index: 1; /* Чтобы были под основной строкой заголовков */
             vertical-align: top; /* Align filter input to top */
             border-bottom: 2px solid var(--border-color);
         }
+
+        .filter-row th:nth-child(1) { width: 40px; min-width: 40px; max-width: 40px; }
+        .filter-row th:nth-child(2) { /* Автоматическая ширина */ }
+        .filter-row th:nth-child(3) { width: 150px; max-width: 150px; }
+        .filter-row th:nth-child(4) { width: 100px; max-width: 100px; }
+        .filter-row th:nth-child(5) { width: 160px; max-width: 160px; }
+        .filter-row th:nth-child(6) { width: 120px; max-width: 120px; }
         
         .file-table th:nth-child(4), 
         .file-table td:nth-child(4),
@@ -1179,16 +1183,16 @@
                             <i class="fas fa-download"></i> Скачать выбранные
                         </button>
                     </div>
-                    <div style="overflow-x:auto;">
+                    <div style="overflow: auto; max-height: 70vh;">
                         <table class="file-table">
                             <thead>
                                 <tr>
-                                    <th style="width: 40px;"></th>
+                                    <th></th> 
                                     <th>Имя файла</th>
-                                    <th style="width: 150px;">Расширение<br>файла</th>
-                                    <th style="padding-left: 10px; width: 100px;">Размер</th>
-                                    <th style="padding-left: 10px; width: 160px;">Дата изменения</th>
-                                    <th style="width: 120px;">Действия</th>
+                                    <th>Расширение<br>файла</th>
+                                    <th>Размер</th>
+                                    <th>Дата изменения</th>
+                                    <th>Действия</th>
                                 </tr>
                                 <tr class="filter-row">
                                     <th></th>
@@ -1196,31 +1200,31 @@
                                         <input type="text" id="filterFileName" class="filter-input" placeholder="Фильтр по имени" list="fileNameList">
                                         <datalist id="fileNameList"></datalist>
                                     </th>
-                                    <th style="width: 150px;">
+                                    <th>
                                         <input type="text" id="filterFileExt" class="filter-input" placeholder="Фильтр" list="fileExtList">
                                         <datalist id="fileExtList"></datalist>
                                     </th>
-                                    <th style="width: 100px;"></th>
-                                    <th style="width: 160px;"></th>
-                                    <th style="width: 120px;"></th>
+                                    <th></th>
+                                    <th></th>
+                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody id="fileTableBody">
                                 {% for file in files %}
                                 <tr class="file-item">
-                                    <td style="width: 40px;">
+                                    <td>
                                         <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
                                     </td>
                                     <td class="text-truncate file-name-container" title="{{ file.name|e }}">
                                         <span class="file-name">{{ file.name.rsplit('.', 1)[0]|e }}</span>
                                     </td>
-                                    <td style="width: 150px; padding-left: 10px;">
+                                    <td>
                                         {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
                                         {{ ext }}
                                     </td>
-                                    <td style="padding-left: 10px; width: 100px;">{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
-                                    <td style="padding-left: 10px; width: 160px;">{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
-                                    <td style="width: 120px;">
+                                    <td>{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
+                                    <td>{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
+                                    <td>
                                         <div class="file-actions">
                                             {% set ext = file.name.split('.')[-1]|lower %}
                                             {% if ext in previewable_extensions %}
