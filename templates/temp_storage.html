@@ -1232,7 +1232,7 @@
                                                 <i class="fas fa-eye"></i>
                                             </button>
                                             {% endif %}
-                                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name|urlencode) }}"
+                                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}"
                                                 class="btn btn-download" title="Скачать" download>
                                                 <i class="fas fa-download"></i>
                                             </a>

@@ -22,6 +22,7 @@ import html
 import hashlib
 from collections import defaultdict
 import traceback  # Добавляем импорт traceback
+from urllib.parse import unquote  # Добавляем unquote
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -999,7 +1000,7 @@ def temp_storage(link_id):
         logger.error(f"Ошибка при загрузке страницы: {str(e)}")
         return "Произошла ошибка при загрузке страницы. Пожалуйста, попробуйте позже.", 500
 
-@app.route('/<link_id>/download/<filename>')
+@app.route('/<link_id>/download/<path:filename>')  # Изменяем <filename> на <path:filename> для обработки слешей
 def download_file(link_id, filename):
     """Скачивание файла из временного хранилища"""
     try:
@@ -1013,19 +1014,24 @@ def download_file(link_id, filename):
             logger.warning(f"Попытка скачивания из недействительного хранилища: {link_id}")
             return "Хранилище недействительно или срок его действия истек", 404
         
-        # Безопасное формирование пути к файлу
-        safe_filename = secure_filename(filename)
-        if not safe_filename:
-            logger.warning(f"Небезопасное имя файла при скачивании: {filename}")
+        # Декодируем имя файла из URL
+        decoded_filename = unquote(filename)
+        logger.debug(f"Запрошен файл (декодированный): {decoded_filename}")
+
+        # Базовая проверка безопасности декодированного имени файла
+        if '..' in decoded_filename or decoded_filename.startswith('/'):
+            logger.warning(f"Обнаружена попытка path traversal: {decoded_filename}")
             return "Недопустимое имя файла", 400
-        
+
         # Проверка на длину имени файла
-        if len(safe_filename) > 255:
-            logger.warning(f"Слишком длинное имя файла при скачивании: {len(safe_filename)}")
+        if len(decoded_filename) > 255:
+            logger.warning(f"Слишком длинное имя файла при скачивании: {len(decoded_filename)}")
             return "Слишком длинное имя файла", 400
             
         storage_path = get_temp_storage_path(link_id)
-        file_path = os.path.join(storage_path, safe_filename)
+        # Используем декодированное имя для пути к файлу
+        file_path = os.path.join(storage_path, decoded_filename)
+        logger.debug(f"Полный путь к файлу: {file_path}")
         
         # Проверка безопасности пути
         real_file_path = os.path.abspath(file_path)
@@ -1037,6 +1043,12 @@ def download_file(link_id, filename):
         # Проверка существования файла
         if not os.path.exists(file_path):
             logger.warning(f"Файл не найден: {file_path}")
+            # Дополнительное логирование: список файлов в директории
+            try:
+                files_in_dir = os.listdir(storage_path)
+                logger.debug(f"Файлы в директории {storage_path}: {files_in_dir}")
+            except Exception as list_err:
+                logger.error(f"Не удалось получить список файлов в {storage_path}: {list_err}")
             return "Файл не найден", 404
             
         # Проверка что это регулярный файл, а не директория или символическая ссылка
@@ -1088,27 +1100,28 @@ def download_file(link_id, filename):
             'css': 'text/css',
         }
         
-        # Получаем расширение файла
+        # Получаем расширение файла из декодированного имени
         ext = ''
-        if '.' in safe_filename:
-            ext = safe_filename.rsplit('.', 1)[1].lower()
+        if '.' in decoded_filename:
+            ext = decoded_filename.rsplit('.', 1)[1].lower()
             mime_type = extensions_mime.get(ext, 'application/octet-stream')
             
         try:
             # Проверяем, является ли запрос запросом на скачивание или просмотр
             is_download_request = request.args.get('download', 'false').lower() == 'true'
 
-            logger.info(f"Отправка файла: {safe_filename}, MIME: {mime_type}, as_attachment: {is_download_request}")
+            logger.info(f"Отправка файла: {decoded_filename}, MIME: {mime_type}, as_attachment: {is_download_request}")
 
             # Используем is_download_request для определения, скачивать файл или показывать inline
+            # Используем decoded_filename для download_name
             return send_file(
                 file_path,
                 mimetype=mime_type,
-                as_attachment=is_download_request, # True если download=true, иначе False (inline)
-                download_name=filename if is_download_request else None # Имя файла только при скачивании
+                as_attachment=is_download_request,  # True если download=true, иначе False (inline)
+                download_name=decoded_filename if is_download_request else None  # Имя файла только при скачивании
             )
         except Exception as e:
-            logger.error(f"Ошибка при отправке файла {filename}: {str(e)}")
+            logger.error(f"Ошибка при отправке файла {decoded_filename}: {str(e)}")
             return "Ошибка при отправке файла", 500
             
     except Exception as e:
@@ -1296,19 +1309,24 @@ def delete_file(link_id, filename):
             # Не возвращаем ошибку, если хранилище уже недействительно, просто логируем
             return jsonify({'success': True, 'message': 'Хранилище недействительно, файл не удален (или уже удален)'})
 
-        # Безопасное имя файла
-        safe_filename = secure_filename(filename)
-        if not safe_filename:
-            logger.warning(f"Небезопасное имя файла при удалении: {filename}")
+        # Декодируем имя файла из URL
+        decoded_filename = unquote(filename)
+        logger.info(f"Запрос на удаление файла (декодированный): {decoded_filename} из хранилища {link_id}")
+
+        # Базовая проверка безопасности декодированного имени файла
+        if '..' in decoded_filename or decoded_filename.startswith('/'):
+            logger.warning(f"Обнаружена попытка path traversal при удалении: {decoded_filename}")
             return jsonify({'error': 'Недопустимое имя файла'}), 400
 
         # Проверка длины имени файла
-        if len(safe_filename) > 255:
-            logger.warning(f"Слишком длинное имя файла при удалении: {len(safe_filename)}")
+        if len(decoded_filename) > 255:
+            logger.warning(f"Слишком длинное имя файла при удалении: {len(decoded_filename)}")
             return jsonify({'error': 'Слишком длинное имя файла'}), 400
 
         storage_path = get_temp_storage_path(link_id)
-        file_path = os.path.join(storage_path, safe_filename)
+        # Используем декодированное имя для пути к файлу
+        file_path = os.path.join(storage_path, decoded_filename)
+        logger.debug(f"Полный путь к удаляемому файлу: {file_path}")
 
         # Проверка безопасности пути
         real_file_path = os.path.abspath(file_path)
@@ -1321,209 +1339,35 @@ def delete_file(link_id, filename):
         if os.path.exists(file_path):
             try:
                 if os.path.isfile(file_path):
+                    logger.info(f"Попытка удаления файла: {file_path}")
                     os.remove(file_path)
-                    logger.info(f"Файл {filename} удален из хранилища {link_id}")
-                    return jsonify({'success': True})
+                    # Проверяем, удалился ли файл
+                    if not os.path.exists(file_path):
+                        logger.info(f"Файл {decoded_filename} успешно удален из хранилища {link_id}")
+                        return jsonify({'success': True})
+                    else:
+                        logger.error(f"Файл {file_path} не удалился после вызова os.remove()")
+                        return jsonify({'error': 'Не удалось подтвердить удаление файла'}), 500
                 else:
                     logger.warning(f"Попытка удалить не файл: {file_path}")
                     return jsonify({'error': 'Указанный путь не является файлом'}), 400
             except OSError as e:
-                logger.error(f"Ошибка при удалении файла {filename} из {link_id}: {str(e)}")
+                logger.error(f"Ошибка при удалении файла {decoded_filename} из {link_id}: {str(e)}")
                 return jsonify({'error': 'Ошибка при удалении файла на сервере'}), 500
         else:
             # Если файла нет, считаем операцию успешной (возможно, он уже удален)
-            logger.info(f"Файл {filename} не найден для удаления в {link_id} (возможно, уже удален)")
+            logger.warning(f"Файл {decoded_filename} не найден для удаления в {link_id} (возможно, уже удален)")
+            # Дополнительное логирование: список файлов в директории
+            try:
+                files_in_dir = os.listdir(storage_path)
+                logger.debug(f"Файлы в директории {storage_path} при попытке удаления: {files_in_dir}")
+            except Exception as list_err:
+                logger.error(f"Не удалось получить список файлов в {storage_path} при удалении: {list_err}")
             return jsonify({'success': True, 'message': 'Файл не найден'})
 
     except Exception as e:
         error_message = handle_error(e, log_message=f"Критическая ошибка при удалении файла {filename} из {link_id}")
         return jsonify({'error': error_message}), 500
-
-@app.route('/<link_id>/delete-all', methods=['POST'])
-@csrf_protected
-def delete_all_files(link_id):
-    """Удаление всего временного хранилища"""
-    try:
-        # Проверка на безопасность link_id
-        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-            logger.warning(f"Попытка удаления всего хранилища с некорректным link_id: {link_id}")
-            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
-
-        storage_path = get_temp_storage_path(link_id)
-
-        # Проверка безопасности пути
-        real_storage_path = os.path.abspath(storage_path)
-        real_base_dir = os.path.abspath(TEMP_STORAGE_DIR)
-        if not real_storage_path.startswith(real_base_dir) or real_storage_path == real_base_dir:
-            logger.error(f"Попытка удаления директории вне {TEMP_STORAGE_DIR}: {storage_path}")
-            return jsonify({'error': 'Доступ запрещен'}), 403
-
-        # Удаляем директорию хранилища, если она существует
-        if os.path.exists(storage_path):
-            try:
-                shutil.rmtree(storage_path)
-                logger.info(f"Хранилище {link_id} полностью удалено")
-            except OSError as e:
-                logger.error(f"Ошибка при удалении хранилища {link_id}: {str(e)}")
-                return jsonify({'error': 'Ошибка при удалении хранилища на сервере'}), 500
-
-        # Удаляем запись из базы данных асинхронно
-        @run_async
-        async def remove_link_from_db():
-            try:
-                async with aiosqlite.connect(DB_PATH) as conn:
-                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
-                    await conn.commit()
-                    logger.info(f"Запись о хранилище {link_id} удалена из БД")
-            except Exception as e:
-                logger.error(f"Ошибка при удалении записи о хранилище {link_id} из БД: {str(e)}")
-
-        try:
-            remove_link_from_db()
-        except Exception as e:
-            # Логируем ошибку, но не прерываем основной ответ
-             logger.error(f"Ошибка при запуске асинхронного удаления записи из БД для {link_id}: {str(e)}")
-
-        return jsonify({'success': True})
-
-    except Exception as e:
-        error_message = handle_error(e, log_message=f"Критическая ошибка при удалении хранилища {link_id}")
-        return jsonify({'error': error_message}), 500
-
-@app.route('/<link_id>/download-multiple', methods=['POST'])
-@csrf_protected
-def download_multiple_files(link_id):
-    """Скачивание нескольких файлов в виде ZIP-архива"""
-    try:
-        # Проверка на безопасность link_id
-        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-            logger.warning(f"Попытка скачивания архива с некорректным link_id: {link_id}")
-            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
-
-        # Проверяем валидность хранилища
-        if not is_temp_storage_valid(link_id):
-            logger.warning(f"Попытка скачивания архива из недействительного хранилища: {link_id}")
-            return jsonify({'error': 'Хранилище недействительно или срок его действия истек'}), 404
-
-        # Получаем список файлов из JSON-тела запроса
-        data = request.get_json()
-        if not data or 'files' not in data or not isinstance(data['files'], list):
-            logger.warning(f"Некорректный запрос на скачивание архива для {link_id}")
-            return jsonify({'error': 'Некорректный формат запроса'}), 400
-
-        filenames = data['files']
-        if not filenames:
-            return jsonify({'error': 'Не выбраны файлы для скачивания'}), 400
-
-        storage_path = get_temp_storage_path(link_id)
-        memory_file = BytesIO()
-
-        # Создаем ZIP-архив в памяти
-        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-            added_files_count = 0
-            for filename in filenames:
-                # Безопасное имя файла
-                safe_filename = secure_filename(filename)
-                if not safe_filename:
-                    logger.warning(f"Пропуск небезопасного имени файла при архивации: {filename}")
-                    continue
-
-                # Проверка длины имени файла
-                if len(safe_filename) > 255:
-                    logger.warning(f"Пропуск слишком длинного имени файла при архивации: {len(safe_filename)}")
-                    continue
-
-                file_path = os.path.join(storage_path, safe_filename)
-
-                # Проверка безопасности пути
-                real_file_path = os.path.abspath(file_path)
-                real_storage_path = os.path.abspath(storage_path)
-                if not real_file_path.startswith(real_storage_path):
-                    logger.error(f"Попытка доступа к файлу вне хранилища при архивации: {file_path}")
-                    continue # Пропускаем файл
-
-                # Проверяем существование и тип файла
-                if os.path.exists(file_path) and os.path.isfile(file_path):
-                    try:
-                        zf.write(file_path, safe_filename)
-                        added_files_count += 1
-                    except Exception as e:
-                        logger.error(f"Ошибка при добавлении файла {safe_filename} в архив для {link_id}: {str(e)}")
-                else:
-                    logger.warning(f"Файл {safe_filename} не найден или не является файлом в {link_id}")
-
-        # Если ни один файл не был добавлен, возвращаем ошибку
-        if added_files_count == 0:
-            logger.warning(f"Ни один файл не был добавлен в архив для {link_id}")
-            return jsonify({'error': 'Не удалось добавить файлы в архив (возможно, они не существуют)'}), 404
-
-        memory_file.seek(0)
-        archive_name = f"files_{link_id}.zip"
-
-        # Отправляем ZIP-архив
-        return send_file(
-            memory_file,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name=archive_name
-        )
-
-    except Exception as e:
-        error_message = handle_error(e, log_message=f"Критическая ошибка при создании архива для {link_id}")
-        return jsonify({'error': error_message}), 500
-
-@app.route('/<link_id>/set-theme', methods=['POST'])
-@csrf_protected
-@run_async  # Добавляем декоратор для асинхронного выполнения
-async def set_theme(link_id):
-    """Установка темы для пользователя"""
-    try:
-        # Проверка на безопасность link_id
-        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
-            logger.warning(f"Попытка установки темы с недействительным link_id: {link_id}")  # Добавлено логирование
-            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
-
-        # Получаем user_id из базы
-        user_id = None  # Инициализируем user_id
-        async with aiosqlite.connect(DB_PATH) as conn:
-            try:
-                cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
-                result = await cursor.fetchone()
-                user_id = result[0] if result else None
-            except Exception as db_err:
-                logger.error(f"Ошибка при получении user_id для link_id {link_id}: {db_err}", exc_info=True)
-                return jsonify({'error': 'Ошибка при доступе к базе данных'}), 500
-
-        if not user_id:
-            logger.warning(f"Пользователь не найден для link_id {link_id} при попытке установки темы")  # Добавлено логирование
-            return jsonify({'error': 'Пользователь не найден для этого хранилища'}), 404
-
-        # Получаем тему из запроса
-        data = request.get_json()
-        if not data:
-            logger.warning(f"Пустой JSON или не JSON запрос для установки темы link_id {link_id}")  # Добавлено логирование
-            return jsonify({'error': 'Неверный формат запроса'}), 400
-
-        theme = data.get('theme')
-
-        if theme not in ['light', 'dark']:
-            logger.warning(f"Недопустимое значение темы '{theme}' для link_id {link_id}")  # Добавлено логирование
-            return jsonify({'error': 'Недопустимое значение темы'}), 400
-
-        # Сохраняем тему в БД
-        success = await set_user_theme_async(user_id, theme)
-
-        if success:
-            return jsonify({'success': True})
-        else:
-            # Ошибка уже залогирована в set_user_theme_async
-            return jsonify({'error': 'Не удалось сохранить тему'}), 500
-
-    except Exception as e:
-        # Логируем полный traceback для неожиданных ошибок
-        error_message = f"Неожиданная ошибка при установке темы для {link_id}: {str(e)}"
-        logger.error(error_message, exc_info=True)  # Используем exc_info=True для полного стека
-        return jsonify({'error': "Внутренняя ошибка сервера при сохранении темы"}), 500
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных
