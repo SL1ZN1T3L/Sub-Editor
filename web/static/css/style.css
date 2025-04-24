@@ -376,6 +376,13 @@ footer {
     margin-top: 15px;
 }
 
+.file-table {
+    width: 100%;
+    border-collapse: collapse;
+    border-spacing: 0;
+    table-layout: fixed;
+}
+
 .file-table tbody {
     display: block;
     max-height: 70vh;
@@ -390,8 +397,54 @@ footer {
     table-layout: fixed;
 }
 
-.file-table thead {
-    position: sticky;
-    top: 0;
-    z-index: 1;
+.file-table th,
+.file-table td {
+    border-color: var(--border-color);
+    vertical-align: top;
+    padding: 12px 8px;
+}
+
+.file-table th:nth-child(1),
+.file-table td:nth-child(1) {
+    width: 40px;
+    min-width: 40px;
+    max-width: 40px;
+    padding-left: 0;
+    padding-right: 0;
+    text-align: center;
+}
+
+.file-table th:nth-child(3),
+.file-table td:nth-child(3) {
+    width: 150px;
+    max-width: 150px;
+    padding-left: 10px;
+    padding-right: 10px;
+    white-space: normal;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-table th:nth-child(4),
+.file-table td:nth-child(4) {
+    width: 100px;
+    max-width: 100px;
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+.file-table th:nth-child(5),
+.file-table td:nth-child(5) {
+    width: 160px;
+    max-width: 160px;
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+.file-table th:nth-child(6),
+.file-table td:nth-child(6) {
+    width: 120px;
+    max-width: 120px;
+    padding-left: 10px;
+    padding-right: 10px;
 }

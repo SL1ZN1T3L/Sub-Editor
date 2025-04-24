@@ -53,6 +53,7 @@
             width: 100%;
             border-collapse: collapse;
             border-spacing: 0;
+            table-layout: fixed; /* Добавлено для выравнивания столбцов */
         }
         
         .file-table th {
@@ -77,10 +78,8 @@
             color: var(--text-color);
         }
         
-        .file-table thead {
-            box-shadow: 0 2px 4px var(--shadow-color);
-            background-color: var(--card-bg);
-            color: var(--text-color);
+        .file-table thead,
+        .file-table tbody {
             display: table;
             width: 100%;
             table-layout: fixed;
@@ -90,6 +89,7 @@
         .file-table td {
             border-color: var(--border-color);
             vertical-align: top; 
+            padding: 12px 8px;
         }
         
         .file-table tr:hover {
@@ -101,16 +101,50 @@
             border-bottom-color: var(--border-color);
         }
         
+        .file-table th:nth-child(1),
+        .file-table td:nth-child(1) {
+            width: 40px;
+            min-width: 40px;
+            max-width: 40px;
+            padding-left: 0;
+            padding-right: 0;
+            text-align: center;
+        }
+
         .file-table th:nth-child(3), 
         .file-table td:nth-child(3) {
-            width: 150px; /* Увеличено для полного текста */
-            max-width: 150px; /* Увеличено для полного текста */
+            width: 150px; 
+            max-width: 150px; 
             padding-left: 10px;
             padding-right: 10px;
-            white-space: normal; /* Allow wrapping */
+            white-space: normal; 
             overflow: hidden;
             text-overflow: ellipsis;
-            vertical-align: top; /* Align text to top */
+            vertical-align: top; 
+        }
+
+        .file-table th:nth-child(4),
+        .file-table td:nth-child(4) {
+            width: 100px;
+            max-width: 100px;
+            padding-left: 10px;
+            padding-right: 10px;
+        }
+
+        .file-table th:nth-child(5),
+        .file-table td:nth-child(5) {
+            width: 160px;
+            max-width: 160px;
+            padding-left: 10px;
+            padding-right: 10px;
+        }
+
+        .file-table th:nth-child(6),
+        .file-table td:nth-child(6) {
+            width: 120px;
+            max-width: 120px;
+            padding-left: 10px;
+            padding-right: 10px;
         }
 
         h2 {
