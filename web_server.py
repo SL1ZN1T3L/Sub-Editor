@@ -23,6 +23,7 @@ import hashlib
 from collections import defaultdict
 import traceback  # Добавляем импорт traceback
 from urllib.parse import unquote  # Добавляем unquote
+import math  # Добавляем импорт math
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -727,6 +728,60 @@ def escapejs_filter(value):
         result = result.replace(char, replacement)
     return result
 
+# Функция для форматирования размера файла
+def format_file_size(size_bytes):
+    """Форматирует размер файла в человекочитаемый вид"""
+    if size_bytes == 0:
+        return "0 B"
+    size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {size_name[i]}"
+
+# Функция для получения класса иконки Font Awesome по расширению
+def get_icon_class(extension):
+    """Возвращает класс иконки Font Awesome для данного расширения файла."""
+    ext_lower = extension.lower()
+    icon_map = {
+        # Изображения
+        'jpg': 'fas fa-file-image', 'jpeg': 'fas fa-file-image', 'png': 'fas fa-file-image',
+        'gif': 'fas fa-file-image', 'bmp': 'fas fa-file-image', 'svg': 'fas fa-file-image',
+        'webp': 'fas fa-file-image', 'ico': 'fas fa-file-image', 'tiff': 'fas fa-file-image',
+        'tif': 'fas fa-file-image',
+        # Документы
+        'pdf': 'fas fa-file-pdf',
+        'doc': 'fas fa-file-word', 'docx': 'fas fa-file-word',
+        'xls': 'fas fa-file-excel', 'xlsx': 'fas fa-file-excel',
+        'ppt': 'fas fa-file-powerpoint', 'pptx': 'fas fa-file-powerpoint',
+        'txt': 'fas fa-file-alt', 'rtf': 'fas fa-file-alt',
+        'odt': 'fas fa-file-alt', 'ods': 'fas fa-file-alt', 'odp': 'fas fa-file-alt',
+        # Архивы
+        'zip': 'fas fa-file-archive', 'rar': 'fas fa-file-archive', '7z': 'fas fa-file-archive',
+        'tar': 'fas fa-file-archive', 'gz': 'fas fa-file-archive', 'bz2': 'fas fa-file-archive',
+        # Аудио
+        'mp3': 'fas fa-file-audio', 'wav': 'fas fa-file-audio', 'ogg': 'fas fa-file-audio',
+        'flac': 'fas fa-file-audio', 'aac': 'fas fa-file-audio',
+        # Видео
+        'mp4': 'fas fa-file-video', 'avi': 'fas fa-file-video', 'mkv': 'fas fa-file-video',
+        'mov': 'fas fa-file-video', 'wmv': 'fas fa-file-video',
+        # Код
+        'html': 'fas fa-file-code', 'htm': 'fas fa-file-code', 'css': 'fas fa-file-code',
+        'js': 'fas fa-file-code', 'json': 'fas fa-file-code', 'xml': 'fas fa-file-code',
+        'py': 'fas fa-file-code', 'java': 'fas fa-file-code', 'c': 'fas fa-file-code',
+        'cpp': 'fas fa-file-code', 'h': 'fas fa-file-code', 'hpp': 'fas fa-file-code',
+        'cs': 'fas fa-file-code', 'php': 'fas fa-file-code', 'rb': 'fas fa-file-code',
+        'go': 'fas fa-file-code', 'rs': 'fas fa-file-code', 'ts': 'fas fa-file-code',
+        'sql': 'fas fa-database', 'sh': 'fas fa-terminal', 'bat': 'fas fa-terminal',
+        # Другие
+        'csv': 'fas fa-file-csv', 'md': 'fab fa-markdown',
+    }
+    return icon_map.get(ext_lower, 'fas fa-file') # Иконка по умолчанию
+
+# Добавляем функции в контекст Jinja
+app.jinja_env.globals.update(get_icon_class=get_icon_class)
+app.jinja_env.globals.update(format_file_size=format_file_size)
+
 # --- Добавленные функции для очистки ---
 
 async def cleanup_expired_storages_async():
@@ -991,7 +1046,8 @@ def temp_storage(link_id):
                                 used_percent=used_percent,
                                 theme=theme,
                                 expires_at=expires_at,
-                                allowed_extensions=ALLOWED_EXTENSIONS_STRING.split(','))
+                                # Передаем список расширений как есть
+                                allowed_extensions=app.config['ALLOWED_EXTENSIONS'])
         except Exception as e:
             logger.error(f"Ошибка при рендеринге шаблона: {str(e)}")
             return "Произошла ошибка при загрузке страницы. Пожалуйста, попробуйте позже.", 500

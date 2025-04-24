@@ -1147,7 +1147,7 @@
                         <i class="fas fa-cloud-upload-alt fa-3x mb-3"></i>
                         <p>Перетащите файлы сюда или нажмите для выбора</p>
                         <p class="text-muted small">Максимальный размер файла: 500 МБ</p>
-                        <p class="text-muted small">Разрешенные типы файлов: {{ ', '.join(allowed_extensions) }}</p>
+                        <p class="text-muted small">Разрешенные типы файлов: {{ ', '.join(allowed_extensions)|e }}</p>
                         <form id="uploadForm" enctype="multipart/form-data">
                             <input type="file" class="file-input" id="fileInput" multiple>
                             <button type="button" class="btn btn-primary mt-3" id="selectFilesBtn">Выбрать файлы</button>
@@ -1213,35 +1213,34 @@
                                 {% for file in files %}
                                 <tr class="file-item">
                                     <td>
-                                        <input type="checkbox" class="file-checkbox" data-filename="{{ file.name }}">
+                                        <input type="checkbox" class="file-checkbox" data-filename="{{ file.raw_name|e|escapejs }}">
                                     </td>
-                                    <td class="text-truncate file-name-container" title="{{ file.name|e }}">
-                                        <span class="file-name">{{ file.name.rsplit('.', 1)[0]|e }}</span>
+                                    <td title="{{ file.name|e }}">
+                                        <div class="file-name-wrapper">
+                                            {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
+                                            <i class="file-type-icon {{ get_icon_class(ext) }}"></i>
+                                            <span class="file-text">{{ file.name.rsplit('.', 1)[0]|e }}</span>
+                                        </div>
                                     </td>
                                     <td>
                                         {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
-                                        {{ ext }}
+                                        {{ ext|e }}
                                     </td>
-                                    <td>{{ (file.size / 1024 / 1024)|round(2) }} MB</td>
-                                    <td>{{ file.modified.strftime('%d.%m.%Y %H:%M:%S') }}</td>
-                                    <td>
-                                        <div class="file-actions">
-                                            {% set ext = file.name.split('.')[-1]|lower %}
-                                            {% if ext in previewable_extensions %}
-                                            <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
-                                                <i class="fas fa-eye"></i>
-                                            </button>
-                                            {% endif %}
-                                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}"
-                                                class="btn btn-download" title="Скачать" download>
-                                                <i class="fas fa-download"></i>
-                                            </a>
-                                            <button class="btn btn-delete"
-                                                    onclick="deleteFile('{{ file.name|e|escapejs }}')"
-                                                    title="Удалить">
-                                                <i class="fas fa-trash"></i>
-                                            </button>
-                                        </div>
+                                    <td>{{ format_file_size(file.size) }}</td>
+                                    <td>{{ file.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                                    <td class="file-actions">
+                                        <a href="{{ url_for('download_file', link_id=link_id, filename=file.raw_name) }}?download=true"
+                                           class="btn btn-download" title="Скачать" download>
+                                            <i class="fas fa-download"></i>
+                                        </a>
+                                        {% if ext in previewable_extensions %}
+                                        <button class="btn btn-preview" data-filename="{{ file.raw_name|e|escapejs }}" title="Предпросмотр">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                        {% endif %}
+                                        <button class="btn btn-delete" onclick="deleteFile('{{ file.raw_name|e|escapejs }}')" title="Удалить">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
                                     </td>
                                 </tr>
                                 {% endfor %}
