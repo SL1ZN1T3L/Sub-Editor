@@ -1380,16 +1380,6 @@ async def cleanup_expired_links(context=None):
         error_message = f"Критическая ошибка при очистке истекших ссылок: {str(e)}"
         logger.error(error_message)
 
-def get_temp_link_keyboard():
-    """Создание клавиатуры для временных ссылок"""
-    keyboard = [
-        ['1 час', '3 часа', '6 часов'],
-        ['12 часов', '24 часа', '48 часов'],
-        ['72 часа'],
-        ['Назад']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
 async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка создания временной ссылки"""
     try:
