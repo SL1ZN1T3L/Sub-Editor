@@ -1639,7 +1639,7 @@
                     }
 
                     if (!uploaded) {
-                        updateFileStatus(index, 'error', 'Не удалось загрузить после всех попыток');
+                        updateFileStatus(index, 'error', 'Не удалось загрузить часть файла после всех попыток');
                         throw new Error('Не удалось загрузить часть файла после всех попыток');
                     }
                 }
@@ -1856,41 +1856,60 @@
         }
 
         document.getElementById('download-selected').addEventListener('click', async function() {
-            const selectedFiles = Array.from(document.querySelectorAll('.file-checkbox:not(#select-all):checked'))
-                .map(checkbox => checkbox.getAttribute('data-filename'));
+            const selectedFiles = Array.from(document.querySelectorAll('.file-checkbox:checked:not(#select-all)'))
+                                     .map(cb => cb.getAttribute('data-filename'));
             
             if (selectedFiles.length === 0) {
-                alert('Выберите файлы для скачивания');
+                showToast('Выберите файлы для скачивания', 'error');
                 return;
             }
-
+            
             try {
+                // Убедимся, что linkId используется в URL
                 const response = await fetch(`/${linkId}/download-multiple`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRF-Token': csrfToken
+                        'X-CSRF-Token': csrfToken // Убедимся, что csrfToken определен и передается
                     },
-                    body: JSON.stringify({ files: selectedFiles })
+                    body: JSON.stringify({ filenames: selectedFiles })
                 });
 
                 if (response.ok) {
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
+                    a.style.display = 'none';
                     a.href = url;
-                    a.download = `files_${linkId}.zip`;
+                    // Получаем имя файла из заголовка Content-Disposition, если оно есть
+                    const disposition = response.headers.get('content-disposition');
+                    let filename = `storage_${linkId}_files.zip`; // Имя по умолчанию
+                    if (disposition && disposition.indexOf('attachment') !== -1) {
+                        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                        const matches = filenameRegex.exec(disposition);
+                        if (matches != null && matches[1]) { 
+                            filename = matches[1].replace(/['"]/g, '');
+                        }
+                    }
+                    a.download = filename;
                     document.body.appendChild(a);
                     a.click();
-                    document.body.removeChild(a);
                     window.URL.revokeObjectURL(url);
+                    a.remove();
+                    showToast('Скачивание архива началось', 'success');
                 } else {
-                    const error = await response.json();
-                    showToast(error.error || 'Ошибка при скачивании файлов', 'error');
+                    const errorData = await response.json().catch(() => ({ error: 'Не удалось получить детали ошибки' }));
+                    console.error('Ошибка при скачивании архива:', response.status, errorData.error);
+                    showToast(`Ошибка скачивания архива: ${errorData.error || response.statusText}`, 'error');
+                    // Попытка обновить CSRF токен при ошибке 403
+                    if (response.status === 403 && (errorData.error || '').toLowerCase().includes('csrf')) {
+                        await refreshCsrfToken();
+                        showToast('Сессия обновлена. Попробуйте еще раз.', 'info');
+                    }
                 }
             } catch (error) {
-                console.error('Ошибка:', error);
-                showToast('Произошла ошибка при скачивании файлов', 'error');
+                console.error('Ошибка при скачивании архива:', error);
+                showToast(`Ошибка сети при скачивании архива: ${error.message}`, 'error');
             }
         });
 
@@ -2006,20 +2025,27 @@
             themeIcon.className = newTheme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
             
             try {
+                // Убедимся, что linkId используется в URL
                 const response = await fetch(`/${linkId}/set-theme`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRF-Token': csrfToken
+                        'X-CSRF-Token': csrfToken // Убедимся, что csrfToken определен и передается
                     },
                     body: JSON.stringify({ theme: newTheme })
                 });
                 
                 if (!response.ok) {
-                    console.error('Ошибка при сохранении темы');
+                    const errorData = await response.json().catch(() => ({})); // Попытка получить JSON ошибки
+                    console.error('Ошибка при сохранении темы:', response.status, errorData.error || 'Неизвестная ошибка');
+                    // Можно показать уведомление пользователю
+                    showToast(`Ошибка сохранения темы: ${errorData.error || response.statusText}`, 'error');
+                } else {
+                    console.log('Тема успешно обновлена');
                 }
             } catch (error) {
-                console.error('Ошибка при сохранении темы:', error);
+                console.error('Ошибка при отправке запроса на сохранение темы:', error);
+                showToast(`Ошибка сети при сохранении темы: ${error.message}`, 'error');
             }
         }
         
@@ -2039,7 +2065,7 @@
             progressBar.style.setProperty('--bg-size', (100 * 100 / value) + '%');
             
             updateButtonsVisibility();
-            initCountdown();
+            initCountdown(); // Добавляем вызов initCountdown здесь, если его нет
         });
 
         // Функция для показа уведомлений
@@ -2051,8 +2077,26 @@
             }
             
             const toast = document.createElement('div');
-            toast.className = `toast ${type === 'error' ? 'toast-error' : type === 'success' ? 'toast-success' : 'toast-info'}`;
-            toast.innerHTML = `<div class="toast-message">${escapeHtml(message)}</div>`;
+            let toastClass = 'toast';
+            if (type === 'error') {
+                toastClass += ' toast-error';
+            } else if (type === 'success') {
+                toastClass += ' toast-success';
+            } else {
+                toastClass += ' toast-info'; // Default or other types
+            }
+            toast.className = toastClass;
+            
+            // Добавляем иконку в зависимости от типа
+            let iconClass = '';
+            if (type === 'error') {
+                iconClass = 'fas fa-exclamation-circle';
+            } else if (type === 'success') {
+                iconClass = 'fas fa-check-circle';
+            } else {
+                iconClass = 'fas fa-info-circle';
+            }
+            toast.innerHTML = `<div class="toast-icon"><i class="${iconClass}"></i></div><div class="toast-message">${escapeHtml(message)}</div>`;
             toastContainer.appendChild(toast);
             
             // Показываем тост и скрываем через некоторое время
@@ -2106,7 +2150,6 @@
                 }
                 return false;
             } catch (error) {
-                console.error('```html```')
                 console.error('Ошибка при обновлении CSRF токена:', error);
                 return false;
             }
@@ -2148,11 +2191,12 @@
             });
             
             try {
+                // Убедимся, что linkId используется в URL
                 const response = await fetch(`/${linkId}/download-multiple`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRF-Token': csrfToken
+                        'X-CSRF-Token': csrfToken // Убедимся, что csrfToken определен и передается
                     },
                     body: JSON.stringify({
                         files: files
@@ -2164,19 +2208,37 @@
                     const blob = await response.blob();
                     const url = window.URL.createObjectURL(blob);
                     const a = document.createElement('a');
+                    a.style.display = 'none';
                     a.href = url;
-                    a.download = `files_${linkId}.zip`;
+                    // Получаем имя файла из заголовка Content-Disposition, если оно есть
+                    const disposition = response.headers.get('content-disposition');
+                    let filename = `storage_${linkId}_files.zip`; // Имя по умолчанию
+                    if (disposition && disposition.indexOf('attachment') !== -1) {
+                        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                        const matches = filenameRegex.exec(disposition);
+                        if (matches != null && matches[1]) { 
+                            filename = matches[1].replace(/['"]/g, '');
+                        }
+                    }
+                    a.download = filename;
                     document.body.appendChild(a);
                     a.click();
                     window.URL.revokeObjectURL(url);
                     a.remove();
+                    showToast('Скачивание архива началось', 'success');
                 } else {
-                    const text = await response.text();
-                    showToast(`Ошибка при скачивании файлов: ${escapeHtml(text)}`, 'error');
+                    const errorData = await response.json().catch(() => ({ error: 'Не удалось получить детали ошибки' }));
+                    console.error('Ошибка при скачивании архива:', response.status, errorData.error);
+                    showToast(`Ошибка скачивания архива: ${errorData.error || response.statusText}`, 'error');
+                    // Попытка обновить CSRF токен при ошибке 403
+                    if (response.status === 403 && (errorData.error || '').toLowerCase().includes('csrf')) {
+                        await refreshCsrfToken();
+                        showToast('Сессия обновлена. Попробуйте еще раз.', 'info');
+                    }
                 }
             } catch (error) {
-                showToast('Произошла ошибка при скачивании файлов', 'error');
-                console.error('Ошибка:', error);
+                console.error('Ошибка при скачивании архива:', error);
+                showToast(`Ошибка сети при скачивании архива: ${error.message}`, 'error');
             }
         }
 

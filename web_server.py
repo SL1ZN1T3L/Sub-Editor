@@ -26,6 +26,7 @@ from urllib.parse import unquote  # Добавляем unquote
 import math  # Добавляем импорт math
 
 # Загружаем переменные окружения из .env файла
+from dotenv import load_dotenv
 load_dotenv()
 
 # Функция для выполнения асинхронных задач в синхронном контексте Flask
@@ -459,6 +460,23 @@ def init_db():
 
 # Инициализируем базу данных при запуске
 init_db()
+
+# Асинхронная функция для получения user_id по link_id
+async def get_user_id_by_link_id_async(link_id):
+    """Асинхронное получение user_id по link_id"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT user_id FROM temp_links WHERE link_id = ?', (link_id,))
+            result = await cursor.fetchone()
+            return result[0] if result else None
+    except Exception as e:
+        logger.error(f"Ошибка при получении user_id для link_id {link_id}: {str(e)}")
+        return None
+
+# Синхронная обертка
+def get_user_id_by_link_id(link_id):
+    """Получение user_id по link_id (синхронная обертка)"""
+    return run_async(get_user_id_by_link_id_async)(link_id)
 
 def get_temp_storage_path(link_id):
     """Получение пути к временному хранилищу"""
@@ -1068,7 +1086,7 @@ def download_file(link_id, filename):
         # Проверяем валидность хранилища
         if not is_temp_storage_valid(link_id):
             logger.warning(f"Попытка скачивания из недействительного хранилища: {link_id}")
-            return "Хранилище недействительно или срок его действия истек", 404
+            return jsonify({'error': 'Хранилище недействительно или срок его действия истек'}), 404
         
         # Декодируем имя файла из URL
         decoded_filename = unquote(filename)
@@ -1346,6 +1364,135 @@ def upload_file(link_id):
                  os.remove(temp_file_path)
         except Exception as remove_err:
              logger.error(f"Не удалось удалить временный файл {locals().get('temp_file_path')} после критической ошибки: {remove_err}")
+        return jsonify({'error': error_message}), 500
+
+
+@app.route('/<link_id>/set-theme', methods=['POST'])
+@csrf_protected
+def set_theme_route(link_id):
+    """Установка темы для пользователя, связанного с link_id"""
+    try:
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка установки темы с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        # Проверяем валидность хранилища (хотя для темы это не обязательно, но для консистентности)
+        if not is_temp_storage_valid(link_id):
+            logger.warning(f"Попытка установки темы для недействительного хранилища: {link_id}")
+            # Не возвращаем ошибку, просто не сохраняем тему в БД, если хранилище невалидно
+            return jsonify({'success': True, 'message': 'Хранилище недействительно, тема не сохранена в БД'}), 200
+
+        data = request.get_json()
+        if not data or 'theme' not in data:
+            logger.warning(f"Некорректные данные при установке темы для {link_id}")
+            return jsonify({'error': 'Отсутствуют данные темы'}), 400
+
+        theme = data['theme']
+        if theme not in ['light', 'dark']:
+            logger.warning(f"Некорректное значение темы '{theme}' для {link_id}")
+            return jsonify({'error': 'Некорректное значение темы'}), 400
+
+        # Получаем user_id по link_id
+        user_id = get_user_id_by_link_id(link_id)
+
+        if user_id:
+            # Сохраняем тему в БД
+            success = set_user_theme(user_id, theme)
+            if success:
+                logger.info(f"Тема '{theme}' успешно установлена для пользователя {user_id} (через link_id {link_id})")
+                return jsonify({'success': True})
+            else:
+                logger.error(f"Не удалось сохранить тему '{theme}' для пользователя {user_id} (через link_id {link_id})")
+                return jsonify({'error': 'Ошибка сохранения темы в базе данных'}), 500
+        else:
+            # Если user_id не найден (анонимная ссылка), просто возвращаем успех
+            # Тема будет сохранена на фронтенде через localStorage или data-атрибут
+            logger.info(f"Тема '{theme}' установлена на фронтенде для анонимного хранилища {link_id} (не сохранена в БД)")
+            return jsonify({'success': True, 'message': 'Тема установлена локально (анонимный пользователь)'})
+
+    except Exception as e:
+        error_message = handle_error(e, log_message=f"Критическая ошибка при установке темы для {link_id}")
+        return jsonify({'error': error_message}), 500
+
+@app.route('/<link_id>/download-multiple', methods=['POST'])
+@csrf_protected
+def download_multiple_files(link_id):
+    """Скачивание нескольких файлов в виде ZIP-архива"""
+    try:
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка скачивания архива с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        # Проверяем валидность хранилища
+        if not is_temp_storage_valid(link_id):
+            logger.warning(f"Попытка скачивания архива из недействительного хранилища: {link_id}")
+            return jsonify({'error': 'Хранилище недействительно или срок его действия истек'}), 404
+
+        data = request.get_json()
+        if not data or 'filenames' not in data or not isinstance(data['filenames'], list):
+            logger.warning(f"Некорректные данные при запросе на скачивание архива для {link_id}")
+            return jsonify({'error': 'Отсутствует или некорректен список файлов'}), 400
+
+        filenames = data['filenames']
+        if not filenames:
+            return jsonify({'error': 'Список файлов пуст'}), 400
+
+        storage_path = get_temp_storage_path(link_id)
+        real_storage_path = os.path.abspath(storage_path)
+
+        # Проверяем существование и валидность всех запрошенных файлов
+        files_to_zip = []
+        for filename in filenames:
+            # Декодируем имя файла
+            decoded_filename = unquote(filename)
+
+            # Базовая проверка безопасности
+            if '..' in decoded_filename or decoded_filename.startswith('/'):
+                logger.warning(f"Обнаружена попытка path traversal при скачивании архива: {decoded_filename}")
+                return jsonify({'error': f'Недопустимое имя файла: {filename}'}), 400
+            if len(decoded_filename) > 255:
+                 logger.warning(f"Слишком длинное имя файла при скачивании архива: {len(decoded_filename)}")
+                 return jsonify({'error': f'Слишком длинное имя файла: {filename}'}), 400
+
+            file_path = os.path.join(storage_path, decoded_filename)
+            real_file_path = os.path.abspath(file_path)
+
+            # Проверка безопасности пути и существования файла
+            if not real_file_path.startswith(real_storage_path):
+                logger.error(f"Попытка доступа к файлу вне хранилища при скачивании архива: {file_path}")
+                return jsonify({'error': f'Доступ к файлу запрещен: {filename}'}), 403
+            if not os.path.exists(file_path) or not os.path.isfile(file_path):
+                logger.warning(f"Файл не найден или не является файлом при скачивании архива: {file_path}")
+                return jsonify({'error': f'Файл не найден: {filename}'}), 404
+
+            files_to_zip.append({'path': file_path, 'name': decoded_filename})
+
+        # Создаем ZIP-архив в памяти
+        memory_file = BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_info in files_to_zip:
+                try:
+                    zf.write(file_info['path'], arcname=file_info['name'])
+                    logger.debug(f"Добавлен файл {file_info['name']} в архив для {link_id}")
+                except Exception as e:
+                    logger.error(f"Ошибка добавления файла {file_info['name']} в архив для {link_id}: {str(e)}")
+                    return jsonify({'error': f'Ошибка при добавлении файла в архив: {file_info["name"]}'}), 500
+
+        memory_file.seek(0)
+        zip_filename = f"storage_{link_id}_files.zip"
+        logger.info(f"Отправка ZIP-архива {zip_filename} для хранилища {link_id}")
+
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+
+    except Exception as e:
+        error_message = handle_error(e, log_message=f"Критическая ошибка при скачивании архива для {link_id}")
         return jsonify({'error': error_message}), 500
 
 
