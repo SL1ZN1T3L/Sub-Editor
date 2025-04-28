@@ -2556,6 +2556,71 @@ async def create_infinite_storage(update: Update, context: ContextTypes.DEFAULT_
     else:
         await update.message.reply_text(f"Ошибка: {response.json().get('error', 'Неизвестная ошибка')}")
 
+async def make_infinite_storage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /make_infinite <user_id> для администраторов."""
+    user_id_to_modify = None
+    admin_user_id = update.effective_user.id
+
+    # 1. Проверка прав администратора
+    if not is_admin(admin_user_id):
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        return
+
+    # 2. Извлечение и валидация user_id из аргументов
+    if not context.args:
+        await update.message.reply_text("Пожалуйста, укажите ID пользователя после команды. Пример: `/make_infinite 123456789`")
+        return
+
+    try:
+        user_id_to_modify = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID пользователя должен быть числом. Пример: `/make_infinite 123456789`")
+        return
+
+    # 3. Отправка запроса на веб-сервер
+    try:
+        headers = {'Authorization': f'Bearer {ADMIN_TOKEN}'}
+        payload = {'user_id': user_id_to_modify}
+        api_url = f"{WEB_SERVER_URL}/create_infinite_storage"
+
+        logger.info(f"Администратор {admin_user_id} отправляет запрос на {api_url} для пользователя {user_id_to_modify}")
+
+        response = requests.post(api_url, json=payload, headers=headers, timeout=10) # Добавляем таймаут
+
+        # 4. Обработка ответа от сервера
+        if response.status_code == 200:
+            response_data = response.json()
+            if response_data.get('success'):
+                await update.message.reply_text(f"✅ Хранилище пользователя {user_id_to_modify} успешно обновлено на бесконечное.")
+            else:
+                # Это не должно произойти при status_code 200, но на всякий случай
+                await update.message.reply_text(f"⚠️ Сервер вернул успех, но без флага success: {response_data.get('message', 'Нет сообщения')}")
+        elif response.status_code == 404:
+             response_data = response.json()
+             await update.message.reply_text(f"❌ Ошибка: {response_data.get('error', 'Пользователь не найден')}")
+        elif response.status_code == 401:
+             await update.message.reply_text("❌ Ошибка аутентификации с веб-сервером. Проверьте ADMIN_SECRET_TOKEN.")
+        elif response.status_code == 400:
+             response_data = response.json()
+             await update.message.reply_text(f"❌ Ошибка в запросе: {response_data.get('error', 'Неверный формат данных')}")
+        else:
+            # Другие ошибки сервера (5xx и т.д.)
+            error_message = f"❌ Ошибка сервера ({response.status_code})."
+            try:
+                response_data = response.json()
+                error_message += f" Детали: {response_data.get('error', response.text)}"
+            except requests.exceptions.JSONDecodeError:
+                error_message += f" Ответ: {response.text}"
+            await update.message.reply_text(error_message)
+            logger.error(f"Ошибка при запросе к /create_infinite_storage: {response.status_code} - {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Ошибка сети при запросе к /create_infinite_storage: {e}")
+        await update.message.reply_text(f"❌ Ошибка сети при обращении к веб-серверу: {e}")
+    except Exception as e:
+        logger.error(f"Непредвиденная ошибка в make_infinite_storage_command: {e}")
+        await update.message.reply_text(f"❌ Произошла непредвиденная ошибка.")
+
 if __name__ == '__main__':
     try:
         print("Запуск бота...")
@@ -2651,6 +2716,7 @@ if __name__ == '__main__':
         # Добавляем обработчик разговора
         app.add_handler(conv_handler)
         app.add_handler(CommandHandler("create_infinite_storage", create_infinite_storage))
+        app.add_handler(CommandHandler("make_infinite", make_infinite_storage_command))
 
         # Выводим информацию о запуске
         print(f"Бот запущен и готов к работе!")
