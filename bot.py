@@ -17,6 +17,7 @@ import asyncio
 import aiosqlite
 import aiofiles
 import pytz
+import requests
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,10 @@ if not USER_PLUS_CODE:
 
 # Получаем домен для временных ссылок
 TEMP_LINK_DOMAIN = os.getenv('TEMP_LINK_DOMAIN', 'https://your-domain.com')
+
+# Получаем URL веб-сервера и токен администратора
+WEB_SERVER_URL = os.getenv('WEB_SERVER_URL')
+ADMIN_TOKEN = os.getenv('ADMIN_TOKEN')
 
 async def set_user_lines_to_keep(user_id, lines):
     """Асинхронная установка количества строк для пользователя"""
@@ -2530,6 +2535,27 @@ async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return True
 
+async def create_infinite_storage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.text.split()[-1]
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        return
+
+    if not user_id.isdigit():
+        await update.message.reply_text("Пожалуйста, укажите корректный ID пользователя.")
+        return
+
+    response = requests.post(
+        f"{WEB_SERVER_URL}/create_infinite_storage",
+        json={'user_id': user_id},
+        headers={'Authorization': f"Bearer {ADMIN_TOKEN}"}
+    )
+
+    if response.status_code == 200:
+        await update.message.reply_text("Хранилище с бесконечным сроком и емкостью успешно создано.")
+    else:
+        await update.message.reply_text(f"Ошибка: {response.json().get('error', 'Неизвестная ошибка')}")
+
 if __name__ == '__main__':
     try:
         print("Запуск бота...")
@@ -2624,6 +2650,7 @@ if __name__ == '__main__':
         
         # Добавляем обработчик разговора
         app.add_handler(conv_handler)
+        app.add_handler(CommandHandler("create_infinite_storage", create_infinite_storage))
 
         # Выводим информацию о запуске
         print(f"Бот запущен и готов к работе!")

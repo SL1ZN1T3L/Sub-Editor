@@ -30,7 +30,12 @@
         <div class="storage-progress">
             <div class="progress-bar" style="width: {{ used_percent }}%"></div>
         </div>
+        {% if storage.capacity == float('inf') %}
+        <p>Емкость: Бесконечная</p>
+        <p>Срок действия: Бессрочно</p>
+        {% else %}
         <p>Использовано: {{ "%.2f"|format(total_size / (1024 * 1024)) }} MB из 500 MB</p>
+        {% endif %}
     </div>
 
     <div class="file-upload">

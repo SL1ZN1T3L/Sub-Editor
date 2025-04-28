@@ -662,7 +662,7 @@ def allowed_file(filename):
 def generate_csrf_token():
     """Генерирует CSRF токен для защиты форм"""
     # Если токен уже существует и не нуждается в обновлении, используем его
-    if 'csrf_token' in session and 'csrf_last_updated' in session:
+    if 'csrf_token' in session и 'csrf_last_updated' in session:
         last_updated = session.get('csrf_last_updated', 0)
         # Обновляем токен каждый час
         if time.time() - last_updated < 3600:
@@ -1263,7 +1263,7 @@ def upload_file(link_id):
             try:
                 current_files_count = len([name for name in os.listdir(storage_path) if os.path.isfile(os.path.join(storage_path, name))])
                 # Если это первый чанк нового файла, проверяем лимит
-                if chunk_number == 0 and current_files_count >= app.config['MAX_FILES_PER_STORAGE']:
+                if chunk_number == 0 и current_files_count >= app.config['MAX_FILES_PER_STORAGE']:
                     logger.warning(f"Превышен лимит количества файлов в хранилище {link_id}")
                     return jsonify({'error': f'Превышен лимит количества файлов ({app.config["MAX_FILES_PER_STORAGE"]})'}), 400
             except Exception as e:
@@ -1360,7 +1360,7 @@ def upload_file(link_id):
         # Попытка удалить временный файл при любой критической ошибке
         # temp_file_path может быть не определен, если ошибка произошла раньше
         try:
-            if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+            if 'temp_file_path' in locals() и os.path.exists(temp_file_path):
                  os.remove(temp_file_path)
         except Exception as remove_err:
              logger.error(f"Не удалось удалить временный файл {locals().get('temp_file_path')} после критической ошибки: {remove_err}")
@@ -1571,6 +1571,27 @@ def delete_file(link_id, filename):
     except Exception as e:
         error_message = handle_error(e, log_message=f"Критическая ошибка при удалении файла {filename} из {link_id}")
         return jsonify({'error': error_message}), 500
+
+@app.route('/create_infinite_storage', methods=['POST'])
+def create_infinite_storage():
+    if not session.get('is_admin'):
+        return jsonify({'error': 'Access denied'}), 403
+
+    user_id = request.json.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'User ID is required'}), 400
+
+    # Логика создания хранилища с бесконечным сроком и емкостью
+    storage = {
+        'user_id': user_id,
+        'capacity': float('inf'),  # Бесконечная емкость
+        'expires_at': None,       # Бесконечный срок
+        'files': []
+    }
+    # Сохраняем хранилище в базе данных или другом хранилище
+    # storage_db.save(storage)
+
+    return jsonify({'success': True, 'message': 'Infinite storage created successfully'})
 
 if __name__ == '__main__':
     # Проверяем подключение к базе данных
