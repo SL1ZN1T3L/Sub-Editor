@@ -18,6 +18,11 @@
     <script src="{{ url_for('static', filename='js/preview.js') }}" defer></script>
     <style>
         /* Если здесь есть стили для .docx-wrapper, .excel-wrapper, .pptx-wrapper, их нужно удалить */
+        
+        /* Скрываем таймер по умолчанию, JS покажет его если нужно */
+        .countdown-timer {
+            display: none; 
+        }
     </style>
 </head>
 <body>
@@ -26,88 +31,218 @@
     {% block title %}Временное хранилище{% endblock %}
 
     {% block content %}
-    <div class="storage-info">
-        <div class="storage-progress">
-            <div class="progress-bar" style="width: {{ used_percent }}%"></div>
+    <div class="container mt-4">
+        <div class="page-title">
+            <div class="rainbow-border"></div>
+            <h1><i class="fas fa-cloud-upload-alt mr-2"></i> Временное хранилище</h1>
         </div>
-        {% if storage.capacity == float('inf') %}
-        <p>Емкость: Бесконечная</p>
-        <p>Срок действия: Бессрочно</p>
+        
+        <!-- Добавляем анимированный счетчик оставшегося времени (скрыт по умолчанию) -->
+        <div class="countdown-timer" id="countdownTimer">
+            <!-- ... countdown units ... -->
+        </div>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="storage-info">
+                    <div class="storage-progress">
+                        <div class="progress">
+                            {% if storage.capacity == float('inf') %}
+                            <div class="progress-bar bg-info" 
+                                 style="width: 100%"
+                                 role="progressbar" 
+                                 aria-valuenow="100"
+                                 aria-valuemin="0" 
+                                 aria-valuemax="100">
+                                Бесконечно
+                            </div>
+                            {% else %}
+                            <div class="progress-bar" 
+                                 style="width: {{ '%.1f' % used_percent }}%"
+                                 role="progressbar" 
+                                 aria-valuenow="{{ '%.1f' % used_percent }}"
+                                 aria-valuemin="0" 
+                                 aria-valuemax="100">
+                                {{ '%.1f' % used_percent }}%
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="storage-text">
+                        {% if storage.capacity == float('inf') %}
+                        Использовано: {{ '%.2f' % used_space }} MB из ∞
+                        {% else %}
+                        Использовано: {{ '%.2f' % used_space }} MB из 500 MB
+                        {% endif %}
+                    </div>
+                </div>
+                <!-- ... delete storage button ... -->
+            </div>
+        </div>
+
+        <div class="file-upload">
+            <form id="upload-form" enctype="multipart/form-data">
+                <input type="file" id="file-input" multiple>
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-upload"></i> Загрузить файлы
+                </button>
+            </form>
+        </div>
+
+        <div class="files-list">
+            <h2>Файлы в хранилище</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Имя файла</th>
+                        <th>Расширение файла</th>
+                        <th style="padding-left: 15px;">Размер</th>
+                        <th style="padding-left: 15px;">Дата изменения</th>
+                        <th style="padding-left: 15px;">Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for file in files %}
+                    <tr>
+                        <td>{{ file.name.rsplit('.', 1)[0] }}</td>
+                        <td style="padding-left: 15px;">
+                            {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
+                            {{ ext }}
+                        </td>
+                        <td style="padding-left: 15px;">{{ "%.2f"|format(file.size / (1024 * 1024)) }} MB</td>
+                        <td style="padding-left: 15px;">{{ file.modified }}</td>
+                        <td class="file-actions" style="padding-left: 15px;">
+                            <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}" 
+                               class="btn btn-download" title="Скачать">
+                                <i class="fas fa-download"></i>
+                            </a>
+                            {% set ext = file.name.split('.')[-1]|lower %}
+                            {% set non_office_previewable = [
+                                'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
+                                'pdf',
+                                'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
+                                'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
+                                'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
+                                'tex', 'bib', 'log', 'diff', 'patch'
+                            ] %}
+                            {% if ext in non_office_previewable %}
+                            <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
+                                <i class="fas fa-eye"></i>
+                            </button>
+                            {% endif %}
+                            <button class="btn btn-delete" 
+                                    onclick="deleteFile('{{ file.name }}')" 
+                                    title="Удалить">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if remaining_time %}
+        <div class="expires-at">Срок действия до: {{ expires_at }} (осталось: {{ remaining_time }})</div>
         {% else %}
-        <p>Использовано: {{ "%.2f"|format(total_size / (1024 * 1024)) }} MB из 500 MB</p>
+        <div class="expires-at">Срок действия до: {{ expires_at }}</div>
         {% endif %}
     </div>
 
-    <div class="file-upload">
-        <form id="upload-form" enctype="multipart/form-data">
-            <input type="file" id="file-input" multiple>
-            <button type="submit" class="btn btn-primary">
-                <i class="fas fa-upload"></i> Загрузить файлы
-            </button>
-        </form>
-    </div>
-
-    <div class="files-list">
-        <h2>Файлы в хранилище</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Имя файла</th>
-                    <th>Расширение файла</th>
-                    <th style="padding-left: 15px;">Размер</th>
-                    <th style="padding-left: 15px;">Дата изменения</th>
-                    <th style="padding-left: 15px;">Действия</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for file in files %}
-                <tr>
-                    <td>{{ file.name.rsplit('.', 1)[0] }}</td>
-                    <td style="padding-left: 15px;">
-                        {% set ext = file.name.split('.')[-1]|lower if '.' in file.name else '' %}
-                        {{ ext }}
-                    </td>
-                    <td style="padding-left: 15px;">{{ "%.2f"|format(file.size / (1024 * 1024)) }} MB</td>
-                    <td style="padding-left: 15px;">{{ file.modified }}</td>
-                    <td class="file-actions" style="padding-left: 15px;">
-                        <a href="{{ url_for('download_file', link_id=link_id, filename=file.name) }}" 
-                           class="btn btn-download" title="Скачать">
-                            <i class="fas fa-download"></i>
-                        </a>
-                        {% set ext = file.name.split('.')[-1]|lower %}
-                        {% set non_office_previewable = [
-                            'jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff', 'tif',
-                            'pdf',
-                            'txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'css', 'js',
-                            'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'go', 'rs', 'ts',
-                            'jsx', 'tsx', 'sql', 'yml', 'yaml', 'ini', 'conf', 'config', 'sh', 'bat', 'ps1',
-                            'tex', 'bib', 'log', 'diff', 'patch'
-                        ] %}
-                        {% if ext in non_office_previewable %}
-                        <button class="btn btn-preview" data-filename="{{ file.name|e|escapejs }}" title="Предпросмотр">
-                            <i class="fas fa-eye"></i>
-                        </button>
-                        {% endif %}
-                        <button class="btn btn-delete" 
-                                onclick="deleteFile('{{ file.name }}')" 
-                                title="Удалить">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-
-    {% if remaining_time %}
-    <div class="expires-at">Срок действия до: {{ expires_at }} (осталось: {{ remaining_time }})</div>
-    {% else %}
-    <div class="expires-at">Срок действия до: {{ expires_at }}</div>
-    {% endif %}
-
     <script>
         window.linkId = '{{ link_id }}';
+
+        // Функция для инициализации обратного отсчета
+        function initCountdown() {
+            const countdownTimer = document.getElementById('countdownTimer');
+            const countDays = document.getElementById('countDays');
+            const countHours = document.getElementById('countHours');
+            const countMinutes = document.getElementById('countMinutes');
+            const countSeconds = document.getElementById('countSeconds');
+            
+            // Получаем дату истечения срока из переменной expires_at
+            // Если хранилище бесконечное, expires_at будет пустой строкой или null
+            const expiresAtString = "{{ expires_at }}"; 
+            if (!expiresAtString) {
+                // Если expires_at пуст (бесконечное хранилище), не показываем таймер
+                countdownTimer.style.display = 'none';
+                console.log("Хранилище бесконечное, таймер не запущен.");
+                return; 
+            }
+
+            const expiresAt = new Date(expiresAtString);
+            
+            if (isNaN(expiresAt.getTime())) {
+                // Если дата невалидна, скрываем таймер
+                countdownTimer.style.display = 'none';
+                console.error("Невалидная дата истечения срока:", expiresAtString);
+                return;
+            }
+            
+            // Показываем таймер, так как дата валидна
+            countdownTimer.style.display = 'flex'; // Используем flex для центрирования
+
+            // Функция обновления таймера
+            function updateCountdown() {
+                const now = new Date();
+                const diff = expiresAt - now;
+                
+                if (diff <= 0) {
+                    // Срок истек
+                    countDays.textContent = '00';
+                    countHours.textContent = '00';
+                    countMinutes.textContent = '00';
+                    countSeconds.textContent = '00';
+                    countdownTimer.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Срок хранения истек';
+                    // Остановить интервал, если он есть
+                    if (window.countdownIntervalId) {
+                         clearInterval(window.countdownIntervalId);
+                    }
+                    return;
+                }
+                
+                // Вычисляем оставшееся время
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+                
+                // Обновляем элементы
+                countDays.textContent = days.toString().padStart(2, '0');
+                countHours.textContent = hours.toString().padStart(2, '0');
+                countMinutes.textContent = minutes.toString().padStart(2, '0');
+                countSeconds.textContent = seconds.toString().padStart(2, '0');
+                
+                // Добавляем класс для анимации, если осталось меньше 24 часов
+                if (diff < 24 * 60 * 60 * 1000) {
+                    countdownTimer.classList.add('expiring');
+                } else {
+                    countdownTimer.classList.remove('expiring');
+                }
+            }
+            
+            // Обновляем сразу и настраиваем интервал
+            updateCountdown();
+            // Сохраняем ID интервала, чтобы можно было его остановить
+            window.countdownIntervalId = setInterval(updateCountdown, 1000);
+        }
+
+        // Устанавливаем правильную иконку при загрузке страницы
+        document.addEventListener('DOMContentLoaded', function() {
+            const progressBar = document.querySelector('.storage-progress .progress-bar');
+            if (progressBar && !progressBar.classList.contains('bg-info')) { // Проверяем, что это не бесконечный бар
+                const value = parseFloat(progressBar.getAttribute('aria-valuenow'));
+                if (!isNaN(value) && value > 0) { // Добавляем проверку на NaN и 0
+                    progressBar.style.setProperty('--value', '100%');
+                    progressBar.style.setProperty('--bg-size', (100 * 100 / value) + '%');
+                } else if (value === 0) {
+                     progressBar.style.setProperty('--bg-size', '100%'); // Или другое значение по умолчанию
+                }
+            }
+            
+            updateButtonsVisibility();
+            initCountdown(); // Вызываем инициализацию таймера
+        });
     </script>
     {% endblock %}
 </body>

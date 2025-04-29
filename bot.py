@@ -18,6 +18,7 @@ import aiosqlite
 import aiofiles
 import pytz
 import requests
+from uuid import uuid4
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -198,6 +199,7 @@ async def setup_database():
                   expires_at TIMESTAMP,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                   extension_count INTEGER DEFAULT 0,
+                  capacity_mb INTEGER DEFAULT 500,
                   FOREIGN KEY (user_id) REFERENCES users(user_id))''')
         
         # Проверка наличия поля extension_count и его добавление, если отсутствует
@@ -205,6 +207,8 @@ async def setup_database():
         columns = [column[1] for column in await cursor.fetchall()]
         if 'extension_count' not in columns:
             await conn.execute("ALTER TABLE temp_links ADD COLUMN extension_count INTEGER DEFAULT 0")
+        if 'capacity_mb' not in columns:
+            await conn.execute("ALTER TABLE temp_links ADD COLUMN capacity_mb INTEGER DEFAULT 500")
         
         # Создание таблицы temp_link_files
         await conn.execute('''CREATE TABLE IF NOT EXISTS temp_link_files
@@ -319,6 +323,7 @@ def get_temp_link_duration_keyboard(user_id):
         ['12 часов', '24 часа'],
         ['3 дня', '7 дней'],
         ['14 дней', '30 дней'],
+        ['♾️ Бесконечное']
     ]
     if is_admin(user_id):
         keyboard.append(['Бесконечное']) # Добавляем кнопку для админов
@@ -1422,6 +1427,7 @@ async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ['12 часов', '24 часа'],
             ['3 дня', '7 дней'],
             ['14 дней', '30 дней'],
+            ['♾️ Бесконечное'],
             ['Назад']
         ]
         
@@ -1458,7 +1464,7 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         '30 дней': 720
     }
     
-    if update.message.text not in duration_map:
+    if update.message.text not in duration_map and update.message.text != "♾️ Бесконечное":
         await update.message.reply_text(
             "Пожалуйста, выберите срок хранения из предложенных вариантов."
         )
@@ -1490,18 +1496,25 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
             context.user_data['current_storage'] = storage['link_id']
             return TEMP_LINK
             
-        duration_hours = duration_map[update.message.text]
+        if update.message.text == "♾️ Бесконечное":
+            expires_at = None
+            capacity_mb = -1
+            duration_text = "Бессрочно"
+        else:
+            duration_hours = duration_map[update.message.text]
+            expires_at = datetime.now() + timedelta(hours=duration_hours)
+            capacity_mb = 500
+            duration_text = update.message.text
         
         # Создаем временное хранилище
         link_id = await generate_temp_link_id()
-        expires_at = datetime.now() + timedelta(hours=duration_hours)
         
         # Создаем запись о временном хранилище
         async with aiosqlite.connect(DB_PATH) as conn:
             await conn.execute('''
-                INSERT INTO temp_links (link_id, expires_at, user_id, created_at, extension_count)
-                VALUES (?, ?, ?, datetime('now'), 0)
-            ''', (link_id, expires_at, update.effective_user.id))
+                INSERT INTO temp_links (link_id, expires_at, user_id, created_at, extension_count, capacity_mb)
+                VALUES (?, ?, ?, datetime('now'), 0, ?)
+            ''', (link_id, expires_at, update.effective_user.id, capacity_mb))
             
             await conn.commit()
         
@@ -1510,27 +1523,33 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         
         # Отправляем пользователю ссылку с кнопкой удаления
         keyboard = [
-            [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+            [KeyboardButton("🗑️ Удалить хранилище")],
             [KeyboardButton("Назад")]
         ]
+        if expires_at is not None:
+            keyboard[0].append(KeyboardButton("🔄 Продлить срок хранилища"))
         markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
         # Форматируем текст о сроке действия
-        duration_text = ""
-        if duration_hours < 24:
-            duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
-        elif duration_hours < 48:
-            duration_text = "1 день"
+        if expires_at is None:
+            success_message = (
+                f"✅ Бесконечное временное хранилище успешно создано!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"💾 Емкость: Бесконечная\n"
+                f"⏱ Срок действия: Бессрочно\n\n"
+                f"Теперь вы можете перейти по ссылке и загрузить файлы."
+            )
         else:
-            days = duration_hours // 24
-            duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
-            
+            success_message = (
+                f"✅ Временное хранилище успешно создано!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"💾 Емкость: {capacity_mb} MB\n"
+                f"⏱ Срок действия: {duration_text} (до {format_datetime(expires_at)})\n\n"
+                f"Теперь вы можете перейти по ссылке и загрузить файлы."
+            )
+        
         await update.message.reply_text(
-            f"✅ Временное хранилище создано!\n\n"
-            f"🔗 Ссылка: {storage_url}\n"
-            f"⏱ Срок действия: {duration_text}\n\n"
-            f"⚠️ Хранилище будет доступно до {format_datetime(expires_at)}\n\n"
-            f"Вы можете загружать файлы через веб-интерфейс.",
+            success_message,
             reply_markup=markup
         )
         
@@ -1563,7 +1582,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
             # Получаем информацию о хранилище
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
-            c.execute('SELECT expires_at, extension_count FROM temp_links WHERE link_id = ? AND user_id = ?', 
+            c.execute('SELECT expires_at, extension_count, capacity_mb FROM temp_links WHERE link_id = ? AND user_id = ?', 
                      (link_id, update.effective_user.id))
             result = c.fetchone()
             
@@ -1575,7 +1594,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
                 conn.close()
                 return MENU
                 
-            expires_at, extension_count = result
+            expires_at, extension_count, capacity_mb = result
             extension_count = extension_count or 0  # Если None, то считаем как 0
             
             # Проверяем, достигнут ли лимит продлений
@@ -1678,7 +1697,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
         # Получаем текущий срок действия
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT expires_at, extension_count FROM temp_links WHERE link_id = ? AND user_id = ?', 
+        c.execute('SELECT expires_at, extension_count, capacity_mb FROM temp_links WHERE link_id = ? AND user_id = ?', 
                  (link_id, update.effective_user.id))
         result = c.fetchone()
         
@@ -1690,7 +1709,7 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
             conn.close()
             return MENU
             
-        expires_at, extension_count = result
+        expires_at, extension_count, capacity_mb = result
         extension_count = extension_count or 0  # Если None, то считаем как 0
         
         # Проверяем, достигнут ли лимит продлений
