@@ -429,62 +429,45 @@ async def is_temp_storage_valid_async(link_id):
         moscow_tz = pytz.timezone('Europe/Moscow')
         now = datetime.now(moscow_tz)
         current_time_iso = now.strftime('%Y-%m-%d %H:%M:%S')
-        
+
         async with aiosqlite.connect(DB_PATH) as conn:
-            cursor = await conn.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
+            # Получаем expires_at и capacity_mb
+            cursor = await conn.execute('SELECT expires_at, capacity_mb FROM temp_links WHERE link_id = ?', (link_id,))
             result = await cursor.fetchone()
-            
+
             if not result:
                 logger.info(f"Хранилище {link_id} не найдено")
                 return False
-                
-            expires_at = result[0]
+
+            expires_at, capacity_mb = result
+
+            # Проверяем, является ли хранилище бесконечным по capacity_mb
+            is_infinite = capacity_mb == -1
+
+            # Если хранилище бесконечное, оно всегда валидно
+            if is_infinite:
+                logger.info(f"Хранилище {link_id} является бесконечным и действительным.")
+                return True
+
+            # Если expires_at равно None, но хранилище не бесконечное (ошибка данных), считаем невалидным
+            if expires_at is None:
+                 logger.warning(f"Хранилище {link_id} имеет expires_at=NULL, но не помечено как бесконечное. Считается невалидным.")
+                 return False
+
+            # Обработка строки expires_at
             if '.' in expires_at:
                 expires_at = expires_at.split('.')[0]
-                
-            if app.config['STORAGE_EXPIRATION_DAYS'] != 7:
-                try:
-                    cursor = await conn.execute("PRAGMA table_info(temp_links)")
-                    columns = await cursor.fetchall()
-                    column_names = [column[1] for column in columns]
-                    
-                    has_created_at = 'created_at' in column_names
-                    
-                    if has_created_at:
-                        cursor = await conn.execute('SELECT created_at FROM temp_links WHERE link_id = ?', (link_id,))
-                        created_result = await cursor.fetchone()
-                        
-                        if created_result and created_result[0]:
-                            created_at = created_result[0]
-                            if '.' in created_at:
-                                created_at = created_at.split('.')[0]
-                                
-                            created_datetime = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
-                            created_datetime = moscow_tz.localize(created_datetime)
-                            
-                            new_expires_datetime = created_datetime + timedelta(days=app.config['STORAGE_EXPIRATION_DAYS'])
-                            new_expires_at = new_expires_datetime.strftime('%Y-%m-%d %H:%M:%S')
-                            
-                            if new_expires_at != expires_at:
-                                logger.info(f"Обновляем срок действия хранилища {link_id} с {expires_at} на {new_expires_at}")
-                                await conn.execute('UPDATE temp_links SET expires_at = ? WHERE link_id = ?', 
-                                                (new_expires_at, link_id))
-                                await conn.commit()
-                                expires_at = new_expires_at
-                    else:
-                        logger.warning(f"Поле created_at не найдено в таблице temp_links. Срок действия хранилища {link_id} не обновлен.")
-                except Exception as e:
-                    logger.error(f"Ошибка при обновлении срока действия хранилища {link_id}: {str(e)}")
-                    
+
+            # Проверка срока действия для обычных хранилищ
             is_valid = expires_at > current_time_iso
-            
+
             if not is_valid:
                 logger.info(f"Хранилище {link_id} истекло ({expires_at} <= {current_time_iso})")
             else:
                 logger.info(f"Хранилище {link_id} действительно ({expires_at} > {current_time_iso})")
-                
+
             return is_valid
-                
+
     except Exception as e:
         logger.error(f"Ошибка при проверке срока действия хранилища {link_id}: {str(e)}")
         return False
@@ -862,41 +845,50 @@ def temp_storage(link_id):
 
         try:
             @run_async
-            async def get_user_id_and_expires_at():
+            async def get_storage_details():
                 async with aiosqlite.connect(DB_PATH) as conn:
-                    cursor = await conn.execute('SELECT user_id, expires_at FROM temp_links WHERE link_id = ?', (link_id,))
+                    # Получаем user_id, expires_at и capacity_mb
+                    cursor = await conn.execute('SELECT user_id, expires_at, capacity_mb FROM temp_links WHERE link_id = ?', (link_id,))
                     result = await cursor.fetchone()
-                    return result if result else (None, None)
-            
-            user_data = get_user_id_and_expires_at()
-            user_id, expires_at = user_data if user_data else (None, None)
+                    return result if result else (None, None, None)
+
+            storage_details = get_storage_details()
+            user_id, expires_at, capacity_mb = storage_details if storage_details else (None, None, None)
+
+            # Определяем, является ли хранилище бесконечным
+            is_infinite = capacity_mb == -1
+
             theme = get_user_theme(user_id) if user_id else 'dark'
         except Exception as e:
             logger.error(f"Ошибка при получении данных пользователя для хранилища {link_id}: {str(e)}")
-            user_id, expires_at = None, None
+            user_id, expires_at, capacity_mb = None, None, None
+            is_infinite = False # По умолчанию не бесконечное
             theme = 'dark'
-        
+
         remaining_time = None
-        if expires_at:
+        # Рассчитываем оставшееся время только если хранилище не бесконечное и есть дата истечения
+        if not is_infinite and expires_at:
             try:
                 if '.' in expires_at:
                     expires_at = expires_at.split('.')[0]
-                
+
                 moscow_tz = pytz.timezone('Europe/Moscow')
                 now = datetime.now(moscow_tz)
                 expires_datetime = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
                 expires_datetime = moscow_tz.localize(expires_datetime)
-                
+
                 time_delta = expires_datetime - now
                 days = time_delta.days
                 hours, remainder = divmod(time_delta.seconds, 3600)
                 minutes, _ = divmod(remainder, 60)
-                
+
                 if days >= 0:
                     remaining_time = f"{days} дн., {hours} ч., {minutes} мин."
             except Exception as e:
                 logger.error(f"Ошибка при расчете оставшегося времени: {str(e)}")
-        
+        elif is_infinite:
+             expires_at = None # Устанавливаем expires_at в None для шаблона, если хранилище бесконечное
+
         storage_path = get_temp_storage_path(link_id)
         if not os.path.exists(storage_path):
             os.makedirs(storage_path)
@@ -931,15 +923,21 @@ def temp_storage(link_id):
         used_space = total_size / (1024 * 1024)
         used_percent = min(100, max(0, (total_size / app.config['MAX_STORAGE_SIZE']) * 100))
         
+        # Определяем емкость для передачи в шаблон
+        storage_capacity = float('inf') if is_infinite else app.config['MAX_STORAGE_SIZE'] / (1024 * 1024) # В MB
+
         try:
             return render_template('temp_storage.html',
                                 link_id=link_id,
                                 files=files,
                                 used_space=used_space,
                                 used_percent=used_percent,
+                                remaining_time=remaining_time,
                                 theme=theme,
-                                expires_at=expires_at,
-                                allowed_extensions=app.config['ALLOWED_EXTENSIONS'])
+                                expires_at=expires_at, # Передаем None для бесконечных
+                                allowed_extensions=app.config['ALLOWED_EXTENSIONS'],
+                                storage={'capacity': storage_capacity}, # Передаем емкость
+                                previewable_extensions=get_previewable_extensions()) # Передаем список расширений
         except Exception as e:
             logger.error(f"Ошибка при рендеринге шаблона: {str(e)}")
             return "Произошла ошибка при загрузке страницы. Пожалуйста, попробуйте позже.", 500
