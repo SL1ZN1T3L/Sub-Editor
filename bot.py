@@ -312,6 +312,19 @@ def get_qr_type_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_temp_link_duration_keyboard(user_id):
+    """Создание клавиатуры выбора срока хранения временного хранилища"""
+    keyboard = [
+        ['1 час', '6 часов'],
+        ['12 часов', '24 часа'],
+        ['3 дня', '7 дней'],
+        ['14 дней', '30 дней'],
+    ]
+    if is_admin(user_id):
+        keyboard.append(['Бесконечное']) # Добавляем кнопку для админов
+    keyboard.append(['Назад'])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_access(update, context):
         return ConversationHandler.END
@@ -467,30 +480,41 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return QR_TYPE
     elif text == '🔗 Создать временное хранилище':
+        user_id = update.effective_user.id
+        if not (await check_user_plus_rights(user_id) or is_admin(user_id)):
+             await update.message.reply_text(
+                 "Эта функция доступна только для привилегированных пользователей и администраторов.",
+                 reply_markup=get_menu_keyboard(user_id)
+             )
+             return MENU
+
         try:
             # Проверяем наличие активного хранилища
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('''
-                SELECT link_id, expires_at 
-                FROM temp_links 
-                WHERE user_id = ? AND expires_at > datetime('now')
-                ORDER BY created_at DESC
-                LIMIT 1
-            ''', (update.effective_user.id,))
-            active_storage = c.fetchone()
-            
+            async with aiosqlite.connect(DB_PATH) as conn:
+                cursor = await conn.execute('''
+                    SELECT link_id, expires_at
+                    FROM temp_links
+                    WHERE user_id = ? AND (expires_at IS NULL OR expires_at > datetime('now'))
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (user_id,))
+                active_storage = await cursor.fetchone()
+
             if active_storage:
                 link_id, expires_at = active_storage
                 storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
-                
+
                 # Создаем клавиатуру с опцией удаления
                 keyboard = [
-                    [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
-                    [KeyboardButton("Назад")]
+                    [KeyboardButton("🗑️ Удалить хранилище")]
                 ]
+                # Кнопка продления только если срок не бесконечный
+                if expires_at is not None:
+                     keyboard[0].append(KeyboardButton("🔄 Продлить срок хранилища"))
+                keyboard.append([KeyboardButton("Назад")])
+
                 markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                
+
                 await update.message.reply_text(
                     f"У вас уже есть активное временное хранилище!\n\n"
                     f"🔗 Ссылка: {storage_url}\n"
@@ -500,31 +524,24 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 context.user_data['current_storage'] = link_id
                 return TEMP_LINK
-                
+
             # Если активного хранилища нет, предлагаем создать новое
-            keyboard = [
-                ['1 час', '6 часов'],
-                ['12 часов', '24 часа'],
-                ['3 дня', '7 дней'],
-                ['14 дней', '30 дней'],
-                ['Назад']
-            ]
             await update.message.reply_text(
                 "Выберите срок хранения временного хранилища:",
-                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                reply_markup=get_temp_link_duration_keyboard(user_id) # Используем новую функцию
             )
             return TEMP_LINK_DURATION
-            
+
         except Exception as e:
             logger.error(f"Ошибка при проверке хранилища: {str(e)}")
             await update.message.reply_text(
                 "Произошла ошибка при проверке хранилища. Попробуйте позже.",
-                reply_markup=get_menu_keyboard(update.effective_user.id)
+                reply_markup=get_menu_keyboard(user_id)
             )
             return MENU
         finally:
-            if 'conn' in locals():
-                conn.close()
+            # Закрытие соединения больше не нужно из-за 'async with'
+            pass
     elif text == 'ℹ️ Помощь':
         await update.message.reply_text(
             "📚 *Помощь по использованию бота*\n\n"
@@ -537,25 +554,20 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Для начала работы просто выберите нужную функцию в меню.",
             parse_mode='Markdown'
         )
-        return MENU
     elif text == '📊 Статистика':
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('SELECT usage_count, merged_count, qr_count FROM users WHERE user_id = ?', 
-                 (update.effective_user.id,))
-        stats = c.fetchone()
-        usage_count = stats[0] if stats else 0
-        merged_count = stats[1] if stats else 0
-        qr_count = stats[2] if stats else 0
-        lines_to_keep = get_user_lines_to_keep(update.effective_user.id)
-        conn.close()
-        
+        user_id = update.effective_user.id
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
+            stats = await cursor.fetchone()
+            usage_count, merged_count, qr_count = stats if stats else (0, 0, 0)
+        lines_to_keep = get_user_lines_to_keep(user_id)
         await update.message.reply_text(
-            f"📊 Ваша статистика:\n\n"
+            f"📊 *Ваша статистика*\n\n"
             f"1. Обработано файлов: {usage_count}\n"
             f"2. Объединено подписок: {merged_count}\n"
             f"3. Создано QR-кодов: {qr_count}\n"
-            f"4. Выбранное количество строк: {lines_to_keep}"
+            f"4. Выбранное количество строк: {lines_to_keep}",
+            parse_mode='Markdown'
         )
     elif text == '⚙️ Настройки':
         return await settings_command(update, context)
