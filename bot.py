@@ -1157,15 +1157,14 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def increment_qr_count(user_id):
     """Увеличение счетчика созданных QR-кодов"""
-    async with await safe_db_connect() as conn:
-        if not conn:
-            return
-        
-        try:
-            await conn.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
-            await conn.commit()
-        except sqlite3.Error as e:
-            print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
+    conn = await safe_db_connect()
+    if not conn:
+        return
+    try:
+        await conn.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
+        await conn.commit()
+    except sqlite3.Error as e:
+        print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
 
 async def safe_db_connect():
     """Безопасное подключение к базе данных"""
@@ -2020,15 +2019,14 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return PROCESS_FILE
 
 async def increment_usage_count(user_id):
-    """Увеличение счетчика использования бота"""
-    async with await safe_db_connect() as conn:
-        if not conn:
-            return
-        
-        try:
-            await conn.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
-            await conn.commit()
-        except sqlite3.Error as e:
+    """Увеличение счетчика использования бота"""   
+    conn = await safe_db_connect()
+    if not conn:
+        return
+    try:
+        await conn.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
+        await conn.commit()
+    except sqlite3.Error as e:
             print(f"Ошибка при обновлении счетчика использования: {e}")
 
 async def get_user_active_storage(user_id):
