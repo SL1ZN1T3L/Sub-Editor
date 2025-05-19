@@ -1415,6 +1415,58 @@ def set_theme_route(link_id):
         error_message = handle_error(e, log_message=f"Критическая ошибка при установке темы для {link_id}")
         return jsonify({'error': error_message}), 500
 
+@app.route('/<link_id>/delete-all', methods=['POST'])
+@csrf_protected
+def delete_all_files(link_id):
+    """Удаление всего временного хранилища"""
+    try:
+        # Проверка на безопасность link_id
+        if not re.match(r'^[a-zA-Z0-9_-]+$', link_id):
+            logger.warning(f"Попытка удаления всего хранилища с некорректным link_id: {link_id}")
+            return jsonify({'error': 'Недействительный идентификатор хранилища'}), 400
+
+        storage_path = get_temp_storage_path(link_id)
+
+        # Проверка безопасности пути
+        real_storage_path = os.path.abspath(storage_path)
+        real_base_dir = os.path.abspath(TEMP_STORAGE_DIR)
+        if not real_storage_path.startswith(real_base_dir) or real_storage_path == real_base_dir:
+            logger.error(f"Попытка удаления директории вне {TEMP_STORAGE_DIR}: {storage_path}")
+            return jsonify({'error': 'Доступ запрещен'}), 403
+
+        # Удаляем директорию хранилища, если она существует
+        if os.path.exists(storage_path):
+            try:
+                shutil.rmtree(storage_path)
+                logger.info(f"Хранилище {link_id} полностью удалено")
+            except OSError as e:
+                logger.error(f"Ошибка при удалении хранилища {link_id}: {str(e)}")
+                return jsonify({'error': 'Ошибка при удалении хранилища на сервере'}), 500
+
+        # Удаляем запись из базы данных асинхронно
+        @run_async
+        async def remove_link_from_db():
+            try:
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+                    await conn.commit()
+                    logger.info(f"Запись о хранилище {link_id} удалена из БД")
+            except Exception as e:
+                logger.error(f"Ошибка при удалении записи о хранилище {link_id} из БД: {str(e)}")
+
+        try:
+            remove_link_from_db()
+        except Exception as e:
+            # Логируем ошибку, но не прерываем основной ответ
+             logger.error(f"Ошибка при запуске асинхронного удаления записи из БД для {link_id}: {str(e)}")
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        error_message = handle_error(e, log_message=f"Критическая ошибка при удалении хранилища {link_id}")
+        return jsonify({'error': error_message}), 500
+
+
 @app.route('/<link_id>/download-multiple', methods=['POST'])
 @csrf_protected
 def download_multiple_files(link_id):
