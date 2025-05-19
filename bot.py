@@ -2030,7 +2030,7 @@ async def increment_usage_count(user_id):
     except sqlite3.Error as e:
             print(f"Ошибка при обновлении счетчика использования: {e}")
 
-async def get_user_active_storage(user_id):
+async def get_user_active_storage(user_id,settings_flag=False):
     """Получение активных временных ссылок пользователя"""
     try:
         # Получаем текущее московское время в формате без микросекунд
@@ -2046,7 +2046,7 @@ async def get_user_active_storage(user_id):
         
         async with aiosqlite.connect(DB_PATH) as conn:
             # Если пользователь - админ, получаем все хранилища, иначе только его собственные
-            if is_user_admin:
+            if is_user_admin and settings_flag:
                 cursor = await conn.execute('''
                     SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count, tl.user_id, u.username
                     FROM temp_links tl
@@ -2065,7 +2065,6 @@ async def get_user_active_storage(user_id):
                     GROUP BY tl.link_id
                     ORDER BY tl.expires_at ASC
                 ''', (user_id,))
-            
             result = await cursor.fetchall()
             
             # Получаем детали по каждой ссылке
@@ -2133,7 +2132,7 @@ async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список активных хранилищ"""
     try:
         # Получаем список активных хранилищ
-        storage_list = await get_user_active_storage(update.effective_user.id)
+        storage_list = await get_user_active_storage(update.effective_user.id, settings_flag=True)
         
         if not storage_list:
             await update.message.reply_text(
