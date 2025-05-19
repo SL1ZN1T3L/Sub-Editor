@@ -36,6 +36,26 @@
 - qrcode==7.4.2
 - pillow==10.2.0
 
+### Внешние (pip) библиотеки
+- python-telegram-bot==21.3
+- python-dotenv==1.0.1
+- aiohttp==3.9.5
+- qrcode==7.4.2
+- pillow==10.4.0
+- Flask==3.0.3
+- Werkzeug==3.0.3
+
+### Стандартная библиотека Python (для информации)
+- os
+- sys
+- logging
+- random
+- datetime
+- base64
+- operator
+- sqlite3
+- shutil
+
 ---
 
 ## Установка
