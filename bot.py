@@ -1113,24 +1113,25 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Создаем временный файл для QR-кода
             temp_filename = os.path.join(TEMP_DIR, f'qr_{update.effective_user.id}.png')
-            
-            # Сохраняем изображение в файл
-            img.save(temp_filename)
-            
-            # Отправляем изображение
-            with open(temp_filename, 'rb') as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption="Ваш QR-код готов!",
-                    reply_markup=get_menu_keyboard(update.effective_user.id)
-                )
-            
-            # Увеличиваем счетчик созданных QR-кодов
-            await increment_qr_count(update.effective_user.id)
-            
+            try:
+                # Сохраняем изображение в файл
+                img.save(temp_filename)
+
+                # Отправляем изображение
+                with open(temp_filename, 'rb') as f:
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption="Ваш QR-код готов!",
+                        reply_markup=get_menu_keyboard(update.effective_user.id)
+                    )
+
+                # Увеличиваем счетчик созданных QR-кодов
+                await increment_qr_count(update.effective_user.id)
+            finally:
+                if temp_filename and os.path.exists(temp_filename):
+                    os.remove(temp_filename)
             # Очищаем данные пользователя
             context.user_data.clear()
-            
             return MENU
             
         except Exception as e:
