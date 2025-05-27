@@ -16,7 +16,6 @@ import time
 import asyncio
 import aiosqlite
 import aiofiles
-import pytz
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,16 +25,28 @@ LOG_DIR = os.path.join(BOT_DIR, 'logs')
 TEMP_LINKS_DIR = os.path.join(BOT_DIR, 'temp_links')
 TEMP_LINKS_DB = os.path.join(BOT_DIR, 'temp_links.db')
 
+try:
+    shutil.rmtree('logs')
+    os.makedirs('logs')
+except FileNotFoundError:
+    os.makedirs('logs')
+
 # Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.path.join(LOG_DIR, 'bot.log')),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+try:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(os.path.join(LOG_DIR, 'bot.log')),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger(__name__)
+
+except Exception as e: # Если каким то чудом случится проблема папкой логов
+    print(e)
+    time.sleep(60)
+    exit
 
 # Загрузка переменных окружения
 load_dotenv()

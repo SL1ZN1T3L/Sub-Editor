@@ -49,7 +49,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join('logs', 'web_server.log')),
+        logging.FileHandler(os.path.join('logs', 'web.log')),
         logging.StreamHandler()
     ]
 )
@@ -109,7 +109,7 @@ app.config['SESSION_USE_SIGNER'] = True
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'true').lower() == 'true'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)
 
 # Защита от брут-форса и rate limiting
 # ИСПРАВЛЕНО: Увеличены лимиты для предотвращения ложных блокировок
