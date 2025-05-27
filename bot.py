@@ -1582,7 +1582,17 @@ async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_
                 )
                 conn.close()
                 return MENU
-                
+
+            duration_map = {
+                '1 час': 1,
+                '6 часов': 6,
+                '12 часов': 12,
+                '24 часа': 24,
+                '3 дня': 72,
+                '7 дней': 168,
+                '14 дней': 336,
+                '30 дней': 720
+            }
             # Рассчитываем новый срок действия
             duration_hours = duration_map[update.message.text]
             new_expires_at = current_expires_at + timedelta(hours=duration_hours)
