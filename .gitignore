@@ -33,8 +33,16 @@ ENV/
 
 # Bot specific
 .env
-bot_users.db
+*.db
 temp/
 logs/
 *.log
 /temp_links
+/temp_storage
+*copy*.py
+Sub-Editor.code-workspace
+*fix*.py
+/flask_session
+epsiquad.py
+epsiquad_library.py
+example_bot.py

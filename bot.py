@@ -11,6 +11,12 @@ import aiohttp
 import qrcode
 import operator
 import logging
+import shutil
+import time
+import asyncio
+import aiosqlite
+import aiofiles
+import pytz
 
 # Определяем путь к директории бота
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,15 +56,30 @@ if not USER_PLUS_CODE:
 # Получаем домен для временных ссылок
 TEMP_LINK_DOMAIN = os.getenv('TEMP_LINK_DOMAIN', 'https://your-domain.com')
 
+async def set_user_lines_to_keep(user_id, lines):
+    """Асинхронная установка количества строк для пользователя"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute(
+                'INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)',
+                (user_id, lines)
+            )
+            await conn.commit()
+            logger.info(f"Установлено количество строк {lines} для пользователя {user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка при установке количества строк для пользователя {user_id}: {e}")
+        # Fallback к синхронной версии
+        set_user_lines_to_keep_sync(user_id, lines)
+
 # Константы для ограничений
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_LINKS = 1000  # Максимальное количество ссылок в файле
 ALLOWED_EXTENSIONS = ('.txt', '.csv', '.md', '')  # Добавлено пустое расширение
 DEFAULT_LINES_TO_KEEP = 10  # Количество строк по умолчанию
-MAX_TEMP_LINK_HOURS = 24  # Максимальное время хранения файла в часах
+MAX_TEMP_LINK_HOURS = 720  # Максимальное время хранения файла в часах (30 дней)
 
 # Состояния разговора
-CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA, TEMP_LINK, TEMP_LINK_DURATION = range(13)
+CAPTCHA, MENU, SETTINGS, TECH_COMMANDS, OTHER_COMMANDS, USER_MANAGEMENT, MERGE_FILES, SET_LINES, PROCESS_FILE, QR_TYPE, QR_DATA, TEMP_LINK, TEMP_LINK_DURATION, TEMP_LINK_EXTEND, STORAGE_MANAGEMENT = range(15)
 
 # Добавим константы для ролей
 class UserRole:
@@ -73,7 +94,18 @@ OPERATORS = {
     '*': operator.mul
 }
 
-def ensure_directories():
+# Глобальные переменные для защиты от спама
+user_action_times = {}  # Словарь для хранения времени последних действий
+user_action_counts = {}  # Словарь для подсчета действий за период
+user_spam_warnings = {}  # Словарь для хранения предупреждений о спаме
+user_ban_list = set()  # Множество для хранения ID заблокированных пользователей
+SPAM_COOLDOWN = 0.5  # Минимальное время между действиями в секундах
+MAX_ACTIONS_PER_MINUTE = 20  # Максимальное количество действий в минуту
+BAN_THRESHOLD = 50  # Порог для автоматической блокировки
+WARNING_THRESHOLD = 10  # Порог для предупреждения администратора (уменьшен)
+ADMIN_NOTIFICATION_INTERVAL = 60  # Интервал между уведомлениями администратора в секундах
+
+async def ensure_directories():
     """Создание необходимых директорий с обработкой ошибок"""
     directories = [TEMP_DIR, LOG_DIR, TEMP_LINKS_DIR]
     for directory in directories:
@@ -83,8 +115,8 @@ def ensure_directories():
                 logger.info(f"Создана директория: {directory}")
                 # Проверяем права на запись
                 test_file = os.path.join(directory, 'test.txt')
-                with open(test_file, 'w') as f:
-                    f.write('test')
+                async with aiofiles.open(test_file, 'w') as f:
+                    await f.write('test')
                 os.remove(test_file)
                 logger.info(f"Проверка прав доступа к директории {directory} успешна")
         except Exception as e:
@@ -93,150 +125,150 @@ def ensure_directories():
             print(error_message)
             sys.exit(1)
 
-def log_error(user_id, error_message):
+async def log_error(user_id, error_message):
     """Логирование ошибок в файл"""
     try:
         log_file = os.path.join(LOG_DIR, f'error_{datetime.now().strftime("%Y-%m-%d")}.log')
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
+        async with aiofiles.open(log_file, 'a', encoding='utf-8') as f:
+            await f.write(f"[{timestamp}] User {user_id}: {error_message}\n")
     except Exception as e:
         print(f"Ошибка при логировании: {str(e)}")
         print(f"[{timestamp}] User {user_id}: {error_message}")
 
-def setup_database():
-    """Создание и проверка базы данных"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+async def setup_database():
+    """Настройка базы данных"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY,
+                  username TEXT,
+                  is_verified BOOLEAN DEFAULT FALSE,
+                  role TEXT DEFAULT 'user',
+                  usage_count INTEGER DEFAULT 0,
+                  merged_count INTEGER DEFAULT 0,
+                  qr_count INTEGER DEFAULT 0,
+                  last_action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  is_banned BOOLEAN DEFAULT FALSE)''')
         
-        # Создаем таблицу users с полем role вместо is_admin
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                is_verified BOOLEAN DEFAULT FALSE,
-                role TEXT DEFAULT 'user',
-                usage_count INTEGER DEFAULT 0,
-                merged_count INTEGER DEFAULT 0,
-                qr_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        logger.info("Таблица users создана или уже существует")
+        # Проверка наличия поля is_banned и его добавление, если отсутствует
+        cursor = await conn.execute("PRAGMA table_info(users)")
+        columns = [column[1] for column in await cursor.fetchall()]
+        if 'is_banned' not in columns:
+            await conn.execute("ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE")
         
-        # Создаем таблицу для статуса бота если её нет
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS bot_status (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                status TEXT DEFAULT 'enabled',
-                lines_to_keep INTEGER DEFAULT 10
-            )
-        ''')
-        logger.info("Таблица bot_status создана или уже существует")
+        # Создание таблицы bot_status
+        await conn.execute('''CREATE TABLE IF NOT EXISTS bot_status
+                 (id INTEGER PRIMARY KEY,
+                  status TEXT DEFAULT 'enabled',
+                  lines_to_keep INTEGER DEFAULT 10)''')
         
-        # Создаем таблицу для персональных настроек пользователей
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INTEGER PRIMARY KEY,
-                lines_to_keep INTEGER DEFAULT 10
-            )
-        ''')
-        logger.info("Таблица user_settings создана или уже существует")
+        # Проверяем наличие записи с id=1
+        cursor = await conn.execute('SELECT COUNT(*) FROM bot_status WHERE id = 1')
+        count = await cursor.fetchone()
+        if count[0] == 0:
+            await conn.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
+        
+        # Создание таблицы user_settings
+        await conn.execute('''CREATE TABLE IF NOT EXISTS user_settings
+                 (user_id INTEGER PRIMARY KEY,
+                  language TEXT DEFAULT 'ru',
+                  lines_to_keep INTEGER DEFAULT 10,
+                  theme TEXT DEFAULT 'dark',
+                  FOREIGN KEY (user_id) REFERENCES users(user_id))''')
+        
+        # Проверяем наличие колонок в user_settings
+        cursor = await conn.execute("PRAGMA table_info(user_settings)")
+        columns = [column[1] for column in await cursor.fetchall()]
+        if 'lines_to_keep' not in columns:
+            await conn.execute("ALTER TABLE user_settings ADD COLUMN lines_to_keep INTEGER DEFAULT 10")
+        if 'theme' not in columns:
+            await conn.execute("ALTER TABLE user_settings ADD COLUMN theme TEXT DEFAULT 'dark'")
+        
+        # Создание таблицы temp_links
+        await conn.execute('''CREATE TABLE IF NOT EXISTS temp_links
+                 (link_id TEXT PRIMARY KEY,
+                  user_id INTEGER,
+                  expires_at TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  extension_count INTEGER DEFAULT 0,
+                  FOREIGN KEY (user_id) REFERENCES users(user_id))''')
+        
+        # Проверка наличия поля extension_count и его добавление, если отсутствует
+        cursor = await conn.execute("PRAGMA table_info(temp_links)")
+        columns = [column[1] for column in await cursor.fetchall()]
+        if 'extension_count' not in columns:
+            await conn.execute("ALTER TABLE temp_links ADD COLUMN extension_count INTEGER DEFAULT 0")
+        
+        # Создание таблицы temp_link_files
+        await conn.execute('''CREATE TABLE IF NOT EXISTS temp_link_files
+                 (file_id TEXT PRIMARY KEY,
+                  link_id TEXT,
+                  file_path TEXT,
+                  original_name TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY (link_id) REFERENCES temp_links(link_id))''')
+        
+        await conn.commit()
+    
+    logger.info("База данных успешно инициализирована")
 
-        # Создаем таблицу для временных ссылок
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS temp_links (
-                link_id TEXT PRIMARY KEY,
-                expires_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        logger.info("Таблица temp_links создана или уже существует")
-        
-        # Создаем таблицу для файлов временных ссылок
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS temp_link_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                link_id TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                FOREIGN KEY (link_id) REFERENCES temp_links(link_id) ON DELETE CASCADE
-            )
-        ''')
-        logger.info("Таблица temp_link_files создана или уже существует")
-        
-        # Проверяем, есть ли запись о статусе бота
-        c.execute('SELECT COUNT(*) FROM bot_status')
-        if c.fetchone()[0] == 0:
-            c.execute('INSERT INTO bot_status (id, status, lines_to_keep) VALUES (1, "enabled", 10)')
-            logger.info("Добавлена запись о статусе бота")
-        
-        conn.commit()
-        logger.info("База данных успешно инициализирована")
-        
-    except sqlite3.Error as e:
-        conn.rollback()
-        error_message = f"Ошибка при создании базы данных: {str(e)}"
-        logger.error(error_message)
-        raise
-        
+def is_user_verified(user_id):
+    """Проверка верификации пользователя (синхронная версия)"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT is_verified FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result[0] if result else False
     finally:
         conn.close()
 
-def is_user_verified(user_id):
-    """Проверка верификации пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT is_verified FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else False
-
 def is_admin(user_id):
-    """Проверка прав администратора"""
+    """Проверка, является ли пользователь администратором"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] == UserRole.ADMIN if result else False
+    try:
+        c = conn.cursor()
+        c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result and result[0] == UserRole.ADMIN
+    finally:
+        conn.close()
 
-def verify_user(user_id, username, role=UserRole.USER):
+async def verify_user(user_id, username, role=UserRole.USER):
     """Верификация пользователя в базе данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Проверяем существующие данные пользователя
-    c.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    
-    if result:
-        existing_role, usage_count, merged_count, qr_count = result
-        # Не понижаем роль существующего пользователя
-        if role == UserRole.USER:
-            role = existing_role
-    else:
-        usage_count, merged_count, qr_count = 0, 0, 0
-    
-    c.execute('''
-        INSERT OR REPLACE INTO users 
-        (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
-        VALUES (?, ?, TRUE, ?, ?, ?, ?)
-    ''', (user_id, username, role, usage_count, merged_count, qr_count))
-    
-    conn.commit()
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        # Проверяем существующие данные пользователя
+        cursor = await conn.execute('SELECT role, usage_count, merged_count, qr_count FROM users WHERE user_id = ?', (user_id,))
+        result = await cursor.fetchone()
+        
+        if result:
+            existing_role, usage_count, merged_count, qr_count = result
+            # Не понижаем роль существующего пользователя
+            if role == UserRole.USER:
+                role = existing_role
+        else:
+            usage_count, merged_count, qr_count = 0, 0, 0
+        
+        await conn.execute('''
+            INSERT OR REPLACE INTO users 
+            (user_id, username, is_verified, role, usage_count, merged_count, qr_count)
+            VALUES (?, ?, TRUE, ?, ?, ?, ?)
+        ''', (user_id, username, role, usage_count, merged_count, qr_count))
+        
+        await conn.commit()
 
 def is_bot_enabled():
     """Проверка, включен ли бот"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT status FROM bot_status WHERE id = 1')
-    result = c.fetchone()
-    conn.close()
-    return result[0] == 'enabled' if result else True
+    try:
+        c = conn.cursor()
+        c.execute('SELECT status FROM bot_status WHERE id = 1')
+        result = c.fetchone()
+        return result[0] == 'enabled' if result else True
+    finally:
+        conn.close()
 
 def generate_captcha():
     """Генерация простой математической капчи"""
@@ -257,14 +289,10 @@ def get_menu_keyboard(user_id):
     keyboard = [
         ['📤 Обработать файл'],
         ['🔄 Объединить подписки', '📱 Создать QR-код'],
+        ['🔗 Создать временное хранилище'],
         ['ℹ️ Помощь', '📊 Статистика'],
         ['⚙️ Настройки']
-    ]
-    
-    # Добавляем кнопку временных ссылок только для User+ и Админов
-    if check_user_plus_rights(user_id):
-        keyboard.insert(2, ['🔗 Создать временную ссылку'])
-    
+    ]   
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_qr_type_keyboard():
@@ -280,6 +308,9 @@ def get_qr_type_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_access(update, context):
+        return ConversationHandler.END
+        
     user_id = update.effective_user.id
     username = update.effective_user.username
     
@@ -292,7 +323,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if command.startswith('admin'):
             code = command[5:]  # Получаем код после 'admin'
             if code == ADMIN_CODE:
-                verify_user(user_id, username, UserRole.ADMIN)
+                await verify_user(user_id, username, UserRole.ADMIN)
                 await update.message.reply_text("Вы успешно авторизованы как администратор! 👑")
                 return await show_menu(update, context)
             else:
@@ -304,7 +335,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             code = command[9:]  # Получаем код после 'user_plus'
             user_plus_code = os.getenv('USER_PLUS_CODE')
             if user_plus_code and code == user_plus_code:
-                verify_user(user_id, username, UserRole.USER_PLUS)
+                await verify_user(user_id, username, UserRole.USER_PLUS)
                 await update.message.reply_text("Вы успешно авторизованы как привилегированный пользователь! ⭐")
                 return await show_menu(update, context)
             else:
@@ -353,7 +384,7 @@ async def check_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if user_answer == correct_answer:
             # Верифицируем пользователя
-            verify_user(
+            await verify_user(
                 update.effective_user.id,
                 update.effective_user.username,
                 UserRole.USER
@@ -377,6 +408,9 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MENU
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_access(update, context):
+        return MENU
+        
     if not is_bot_enabled() and not is_admin(update.effective_user.id):
         await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
         return MENU
@@ -427,28 +461,72 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_qr_type_keyboard()
         )
         return QR_TYPE
-    elif text == '🔗 Создать временную ссылку':
-        if not check_user_plus_rights(update.effective_user.id):
-            await update.message.reply_text("У вас нет прав для использования этой функции.")
+    elif text == '🔗 Создать временное хранилище':
+        try:
+            # Проверяем наличие активного хранилища
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                SELECT link_id, expires_at 
+                FROM temp_links 
+                WHERE user_id = ? AND expires_at > datetime('now')
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (update.effective_user.id,))
+            active_storage = c.fetchone()
+            
+            if active_storage:
+                link_id, expires_at = active_storage
+                storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
+                
+                # Создаем клавиатуру с опцией удаления
+                keyboard = [
+                    [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                    [KeyboardButton("Назад")]
+                ]
+                markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                await update.message.reply_text(
+                    f"У вас уже есть активное временное хранилище!\n\n"
+                    f"🔗 Ссылка: {storage_url}\n"
+                    f"⏱ Срок действия до: {format_datetime(expires_at)}\n\n"
+                    f"Вы можете продолжать использовать это хранилище или удалить его.",
+                    reply_markup=markup
+                )
+                context.user_data['current_storage'] = link_id
+                return TEMP_LINK
+                
+            # Если активного хранилища нет, предлагаем создать новое
+            keyboard = [
+                ['1 час', '6 часов'],
+                ['12 часов', '24 часа'],
+                ['3 дня', '7 дней'],
+                ['14 дней', '30 дней'],
+                ['Назад']
+            ]
+            await update.message.reply_text(
+                "Выберите срок хранения временного хранилища:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
+            return TEMP_LINK_DURATION
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проверке хранилища: {str(e)}")
+            await update.message.reply_text(
+                "Произошла ошибка при проверке хранилища. Попробуйте позже.",
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
             return MENU
-        # Создаем клавиатуру с выбором срока хранения
-        keyboard = [
-            ['1 час', '6 часов'],
-            ['12 часов', '24 часа'],
-            ['Назад']
-        ]
-        await update.message.reply_text(
-            "Выберите срок хранения временного хранилища:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-        return TEMP_LINK_DURATION
+        finally:
+            if 'conn' in locals():
+                conn.close()
     elif text == 'ℹ️ Помощь':
         await update.message.reply_text(
             "📚 *Помощь по использованию бота*\n\n"
             "📤 *Обработать файл* - загрузите файл со ссылками, и бот вернет последние N ссылок\n"
             "🔄 *Объединить подписки* - объединяет несколько подписок в одну\n"
             "📱 *Создать QR-код* - создает QR-код для различных типов данных\n"
-            "🔗 *Создать временную ссылку* - создает временное хранилище для файлов\n"
+            "🔗 *Создать временное хранилище* - создает хранилище для файлов с возможностью выбора срока хранения от 1 часа до 30 дней, с возможностью продления\n"
             "📊 *Статистика* - показывает вашу статистику использования\n"
             "⚙️ *Настройки* - настройки бота\n\n"
             "Для начала работы просто выберите нужную функцию в меню.",
@@ -509,27 +587,14 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_menu(update, context)
         return MENU
     elif text == "Настройка количества строк":
-        if is_admin(update.effective_user.id):
-            # Для админов показываем выбор между личными и глобальными настройками
-            keyboard = []
-            keyboard.append([KeyboardButton(text="Изменить для себя")])
-            keyboard.append([KeyboardButton(text="Изменить для всех")])
-            keyboard.append([KeyboardButton(text="Назад")])
-            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text(
-                "Выберите действие:",
-                reply_markup=markup
-            )
-            return SET_LINES
-        else:
-            # Для обычных пользователей сразу запрашиваем количество строк
-            current_lines = get_user_lines_to_keep(update.effective_user.id)
-            await update.message.reply_text(
-                f"Текущее количество строк: {current_lines}\n"
-                f"Введите новое количество (от 1 до {MAX_LINKS}):"
-            )
-            context.user_data['setting_type'] = 'personal'
-            return SET_LINES
+        # Напрямую запрашиваем новое количество строк для пользователя
+        current_lines = get_user_lines_to_keep(update.effective_user.id)
+        await update.message.reply_text(
+            f"Текущее количество строк: {current_lines}\n"
+            f"Введите новое количество (от 1 до {MAX_LINKS}):"
+        )
+        context.user_data['setting_type'] = 'personal'
+        return SET_LINES
     elif text == "Технические команды" and is_admin(update.effective_user.id):
         markup = ReplyKeyboardMarkup(
             keyboard=[
@@ -547,6 +612,7 @@ async def process_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard=[
                 [KeyboardButton(text="Написать всем пользователям")],
                 [KeyboardButton(text="Управление пользователями")],
+                [KeyboardButton(text="Управление хранилищами")],
                 [KeyboardButton(text="Назад")]
             ],
             resize_keyboard=True
@@ -563,7 +629,7 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "Назад":
         await settings_command(update, context)
         return SETTINGS
-    elif text == "Изменить для себя":
+    elif text == "Настройка количества строк":
         current_lines = get_user_lines_to_keep(update.effective_user.id)
         await update.message.reply_text(
             f"Текущее количество строк: {current_lines}\n"
@@ -571,27 +637,13 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data['setting_type'] = 'personal'
         return SET_LINES
-    elif text == "Изменить для всех" and is_admin(update.effective_user.id):
-        current_lines = get_lines_to_keep()
-        await update.message.reply_text(
-            f"Текущее глобальное количество строк: {current_lines}\n"
-            f"Введите новое количество (от 1 до {MAX_LINKS}):"
-        )
-        context.user_data['setting_type'] = 'global'
-        return SET_LINES
     elif text.isdigit():
         try:
             lines = int(text)
             if 1 <= lines <= MAX_LINKS:
-                setting_type = context.user_data.get('setting_type')
-                if setting_type == 'global' and is_admin(update.effective_user.id):
-                    # Админ меняет глобальные настройки
-                    set_lines_to_keep(lines)  # Обновляем глобальные настройки
-                    await update.message.reply_text(f"Глобальное количество строк установлено: {lines}")
-                elif setting_type == 'personal':
-                    # Пользователь меняет свои настройки
-                    set_user_lines_to_keep(update.effective_user.id, lines)
-                    await update.message.reply_text(f"Ваше персональное количество строк установлено: {lines}")
+                # Пользователь меняет свои настройки
+                await set_user_lines_to_keep(update.effective_user.id, lines)
+                await update.message.reply_text(f"Количество строк установлено: {lines}")
             else:
                 await update.message.reply_text(f"Введите число от 1 до {MAX_LINKS}")
                 return SET_LINES
@@ -606,7 +658,7 @@ async def process_set_lines(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SET_LINES
 
 async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_admin_rights(update.effective_user.id):
+    if not await check_admin_rights(update.effective_user.id):
         await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         await show_menu(update, context)
         return MENU
@@ -632,13 +684,16 @@ async def process_tech_commands(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("Бот выключен. Теперь он на техническом обслуживании.")
     elif text == "Перезапустить бота":
         await update.message.reply_text("Перезапуск бота...")
-        # Завершаем процесс, systemd или другой менеджер процессов перезапустит бот
-        sys.exit(0)
+        # Отправляем сигнал SIGTERM для корректного завершения работы
+        import os
+        import signal
+        logger.info("Перезапуск бота по команде администратора")
+        os.kill(os.getpid(), signal.SIGTERM)
     
     return TECH_COMMANDS
 
 async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not check_admin_rights(update.effective_user.id):
+    if not await check_admin_rights(update.effective_user.id):
         await update.message.reply_text("У вас нет прав для выполнения этой команды.")
         await show_menu(update, context)
         return MENU
@@ -653,6 +708,8 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
         return OTHER_COMMANDS
     elif text == "Управление пользователями":
         return await show_users_list(update, context)
+    elif text == "Управление хранилищами":
+        return await show_storage_list(update, context)
     else:
         # Отправляем сообщение всем пользователям
         conn = sqlite3.connect(DB_PATH)
@@ -675,14 +732,19 @@ async def process_other_commands(update: Update, context: ContextTypes.DEFAULT_T
 
 async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список пользователей с кнопками"""
-    users = get_all_users()
+    if not await check_user_access(update, context):
+        return USER_MANAGEMENT
+        
+    users = await get_all_users_async()
     if not users:
         await update.message.reply_text("В базе данных нет пользователей.")
         return OTHER_COMMANDS
     
     verified_count = sum(1 for user in users if user[2])
+    banned_count = sum(1 for user in users if user[7])  # is_banned поле
     
-    user_list = f"Всего верифицированных пользователей: {verified_count}\n\nСписок пользователей:\n\n"
+    user_list = f"Всего верифицированных пользователей: {verified_count}\n"
+    user_list += f"Заблокированных пользователей: {banned_count}\n\nСписок пользователей:\n\n"
     
     # Создаем клавиатуру с именами пользователей
     keyboard = []
@@ -692,18 +754,20 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = user[0]
         username = user[1] or f"ID: {user_id}"
         role = 'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'
+        is_banned = user[7]  # is_banned поле
         
         user_list += (
-            f"ID: `{user[0]}`\n"
+            f"ID: {user[0]}\n"
             f"Имя: {user[1] or 'Не указано'}\n"
             f"Верифицирован: {'Да' if user[2] else 'Нет'}\n"
-            f"Роль: {'Пользователь' if user[3]=='user' else 'Пользователь+' if user[3]=='user_plus' else 'Админ'}\n"           
+            f"Роль: {role}\n"
+            f"Статус: {'Заблокирован' if is_banned else 'Активен'}\n"
             f"Обработано файлов: {user[4]}\n"
             f"Объединено подписок: {user[5]}\n"
             f"Создано QR-кодов: {user[6]}\n\n"
         )
         
-        button_text = f"{username} ({role})"
+        button_text = f"{username} ({role}){' [ЗАБЛОКИРОВАН]' if is_banned else ''}"
         keyboard.append([KeyboardButton(text=button_text)])
         users_dict[button_text] = user_id
 
@@ -715,20 +779,31 @@ async def show_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         user_list + "\nВыберите пользователя для управления:", 
-        reply_markup=markup,
-        parse_mode='Markdown'
+        reply_markup=markup
     )
     
     return USER_MANAGEMENT
 
 async def process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка управления пользователями"""
+    # Для администраторов пропускаем проверку спама
+    if is_admin(update.effective_user.id):
+        return await _process_user_management(update, context)
+    
+    if not await check_user_access(update, context):
+        return USER_MANAGEMENT
+    
+    return await _process_user_management(update, context)
+
+async def _process_user_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Внутренняя функция обработки управления пользователями"""
     text = update.message.text
     
     if text == "Назад":
         await settings_command(update, context)
         return SETTINGS
         
-    if text in ["Убрать из базы", "Выдать пользователя", "Выдать пользователя+", "Выдать админа"]:
+    if text in ["Убрать из базы", "Выдать пользователя", "Выдать пользователя+", "Выдать админа", "Заблокировать", "Разблокировать"]:
         user_id = context.user_data.get('selected_user_id')
         if not user_id:
             await update.message.reply_text("Сначала выберите пользователя.")
@@ -739,11 +814,32 @@ async def process_user_management(update: Update, context: ContextTypes.DEFAULT_
                 await update.message.reply_text("Вы не можете удалить себя.")
             else:
                 try:
-                    remove_user(user_id)
+                    await remove_user(user_id)
                     await update.message.reply_text("Пользователь удален.")
                     return await show_users_list(update, context)
                 except Exception as e:
                     await update.message.reply_text(f"Ошибка при удалении пользователя: {str(e)}")
+        elif text == "Заблокировать":
+            if user_id == update.effective_user.id:
+                await update.message.reply_text("Вы не можете заблокировать себя.")
+            else:
+                try:
+                    if await ban_user(context.bot, user_id, True):
+                        await update.message.reply_text("Пользователь заблокирован.")
+                    else:
+                        await update.message.reply_text("Ошибка при блокировке пользователя.")
+                    return await show_users_list(update, context)
+                except Exception as e:
+                    await update.message.reply_text(f"Ошибка при блокировке пользователя: {str(e)}")
+        elif text == "Разблокировать":
+            try:
+                if await ban_user(context.bot, user_id, False):
+                    await update.message.reply_text("Пользователь разблокирован.")
+                else:
+                    await update.message.reply_text("Ошибка при разблокировке пользователя.")
+                return await show_users_list(update, context)
+            except Exception as e:
+                await update.message.reply_text(f"Ошибка при разблокировке пользователя: {str(e)}")
         else:
             role = {
                 "Выдать пользователя": UserRole.USER,
@@ -752,11 +848,9 @@ async def process_user_management(update: Update, context: ContextTypes.DEFAULT_
             }[text]
             
             try:
-                conn = sqlite3.connect(DB_PATH)
-                c = conn.cursor()
-                c.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
-                conn.commit()
-                conn.close()
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
+                    await conn.commit()
                 await update.message.reply_text("Роль пользователя обновлена.")
                 return await show_users_list(update, context)
             except Exception as e:
@@ -767,11 +861,15 @@ async def process_user_management(update: Update, context: ContextTypes.DEFAULT_
         user_id = context.user_data['users_info'][text]
         context.user_data['selected_user_id'] = user_id
         
+        # Проверяем статус блокировки пользователя
+        is_banned = is_user_banned(user_id)
+        
         keyboard = [
             [KeyboardButton(text="Убрать из базы")],
             [KeyboardButton(text="Выдать пользователя")],
             [KeyboardButton(text="Выдать пользователя+")],
             [KeyboardButton(text="Выдать админа")],
+            [KeyboardButton(text="Заблокировать" if not is_banned else "Разблокировать")],
             [KeyboardButton(text="Назад")]
         ]
         markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -851,11 +949,11 @@ async def process_merge_files(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     except Exception as e:
         error_message = f"Ошибка при обработке подписок: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        await log_error(update.effective_user.id, error_message)
         await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте снова.")
         return MERGE_FILES
 
-def merge_vless_subscriptions(subscriptions):
+async def merge_vless_subscriptions(subscriptions):
     """Объединение VLESS-подписок"""
     merged_configs = []
     
@@ -896,7 +994,7 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
             encoded_config = base64.b64encode(merged_config.encode('utf-8')).decode('utf-8')
             
             # Увеличиваем счетчик объединений
-            increment_merge_count(update.effective_user.id)
+            await increment_merge_count(update.effective_user.id)
             
             await update.message.reply_text(
                 f"Объединенная подписка (нажмите, чтобы скопировать):\n\n"
@@ -920,13 +1018,17 @@ async def process_merge_command(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         return await process_merge_files(update, context)
 
-def increment_merge_count(user_id):
-    """Увеличение счетчика объединенных подписок"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE users SET merged_count = merged_count + 1 WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+async def increment_merge_count(user_id):
+    """Увеличение счетчика объединений"""
+    async with await safe_db_connect() as conn:
+        if not conn:
+            return
+        
+        try:
+            await conn.execute('UPDATE users SET merged_count = merged_count + 1 WHERE user_id = ?', (user_id,))
+            await conn.commit()
+        except sqlite3.Error as e:
+            print(f"Ошибка при обновлении счетчика объединений: {e}")
 
 async def process_qr_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -1011,29 +1113,30 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Создаем временный файл для QR-кода
             temp_filename = os.path.join(TEMP_DIR, f'qr_{update.effective_user.id}.png')
-            
-            # Сохраняем изображение в файл
-            img.save(temp_filename)
-            
-            # Отправляем изображение
-            with open(temp_filename, 'rb') as f:
-                await update.message.reply_photo(
-                    photo=f,
-                    caption="Ваш QR-код готов!",
-                    reply_markup=get_menu_keyboard(update.effective_user.id)
-                )
-            
-            # Увеличиваем счетчик созданных QR-кодов
-            increment_qr_count(update.effective_user.id)
-            
+            try:
+                # Сохраняем изображение в файл
+                img.save(temp_filename)
+
+                # Отправляем изображение
+                with open(temp_filename, 'rb') as f:
+                    await update.message.reply_photo(
+                        photo=f,
+                        caption="Ваш QR-код готов!",
+                        reply_markup=get_menu_keyboard(update.effective_user.id)
+                    )
+
+                # Увеличиваем счетчик созданных QR-кодов
+                await increment_qr_count(update.effective_user.id)
+            finally:
+                if temp_filename and os.path.exists(temp_filename):
+                    os.remove(temp_filename)
             # Очищаем данные пользователя
             context.user_data.clear()
-            
             return MENU
             
         except Exception as e:
             error_message = f"Ошибка при создании QR-кода: {str(e)}"
-            log_error(update.effective_user.id, error_message)
+            await log_error(update.effective_user.id, error_message)
             if temp_filename and os.path.exists(temp_filename):
                 os.remove(temp_filename)
             await update.message.reply_text(
@@ -1044,7 +1147,7 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         error_message = f"Ошибка при создании QR-кода: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        await log_error(update.effective_user.id, error_message)
         if temp_filename and os.path.exists(temp_filename):
             os.remove(temp_filename)
         await update.message.reply_text(
@@ -1053,45 +1156,39 @@ async def process_qr_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return QR_TYPE
 
-def increment_qr_count(user_id):
+async def increment_qr_count(user_id):
     """Увеличение счетчика созданных QR-кодов"""
-    conn = safe_db_connect()
+    conn = await safe_db_connect()
     if not conn:
         return
-    
     try:
-        c = conn.cursor()
-        c.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
-        conn.commit()
+        await conn.execute('UPDATE users SET qr_count = qr_count + 1 WHERE user_id = ?', (user_id,))
+        await conn.commit()
     except sqlite3.Error as e:
         print(f"Ошибка при обновлении счетчика QR-кодов: {e}")
-    finally:
-        conn.close()
 
-def safe_db_connect():
+async def safe_db_connect():
     """Безопасное подключение к базе данных"""
     try:
-        return sqlite3.connect(DB_PATH)
+        return await aiosqlite.connect(DB_PATH)
     except sqlite3.Error as e:
         print(f"Ошибка подключения к базе данных: {e}")
         return None
 
-def get_user_role(user_id):
+async def get_user_role(user_id):
     """Получение роли пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
+        result = await cursor.fetchone()
     return result[0] if result else UserRole.USER
 
-def check_admin_rights(user_id):
+async def check_admin_rights(user_id):
     """Проверка прав администратора"""
-    return get_user_role(user_id) == UserRole.ADMIN
+    return await get_user_role(user_id) == UserRole.ADMIN
 
-def check_user_plus_rights(user_id):
+async def check_user_plus_rights(user_id):
     """Проверка прав привилегированного пользователя"""
-    role = get_user_role(user_id)
+    role = await get_user_role(user_id)
     return role in [UserRole.ADMIN, UserRole.USER_PLUS]
 
 async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1118,165 +1215,213 @@ async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-def generate_temp_link_id():
+async def generate_temp_link_id():
     """Генерация уникального ID для временной ссылки"""
     # Используем только буквы и цифры для более короткого ID
     chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    return ''.join(random.choice(chars) for _ in range(4))
+    while True:
+        link_id = ''.join(random.choice(chars) for _ in range(4))
+        # Проверяем, не существует ли уже такой ID
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT COUNT(*) FROM temp_links WHERE link_id = ?', (link_id,))
+            count = await cursor.fetchone()
+            if count[0] == 0:
+                return link_id
 
-def save_temp_link(file_path, original_name, duration_hours):
+async def save_temp_link(file_path, original_name, duration_hours, user_id):
     """Сохранение информации о временной ссылке"""
     try:
-        link_id = generate_temp_link_id()
-        expires_at = datetime.now() + timedelta(hours=duration_hours)
+        link_id = await generate_temp_link_id()
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        # Создаем дату без микросекунд
+        expires_dt = datetime.now() + timedelta(hours=duration_hours)
+        expires_at = expires_dt.strftime('%Y-%m-%d %H:%M:%S')  # Форматирование без микросекунд
         
-        try:
-            # Создаем запись о временной ссылке
-            c.execute('''
-                INSERT INTO temp_links (link_id, expires_at)
-                VALUES (?, ?)
-            ''', (link_id, expires_at))
-            
-            # Добавляем информацию о файле
-            c.execute('''
-                INSERT INTO temp_link_files (link_id, file_path, original_name)
-                VALUES (?, ?, ?)
-            ''', (link_id, file_path, original_name))
-            
-            conn.commit()
-            return link_id
-            
-        except sqlite3.Error as e:
-            conn.rollback()
-            error_message = f"Ошибка базы данных при сохранении временной ссылки: {str(e)}"
-            log_error(None, error_message)
-            raise
-            
-        finally:
-            conn.close()
-            
+        async with aiosqlite.connect(DB_PATH) as conn:
+            try:
+                # Создаем запись о временной ссылке
+                await conn.execute('''
+                    INSERT INTO temp_links (link_id, expires_at, user_id, extension_count)
+                    VALUES (?, ?, ?, 0)
+                ''', (link_id, expires_at, user_id))
+                
+                # Добавляем информацию о файле
+                await conn.execute('''
+                    INSERT INTO temp_link_files (link_id, file_path, original_name)
+                    VALUES (?, ?, ?)
+                ''', (link_id, file_path, original_name))
+                
+                await conn.commit()
+                return link_id
+                
+            except sqlite3.Error as e:
+                error_message = f"Ошибка базы данных при сохранении временной ссылки: {str(e)}"
+                await log_error(None, error_message)
+                raise
+                
     except Exception as e:
         error_message = f"Критическая ошибка при сохранении временной ссылки: {str(e)}"
-        log_error(None, error_message)
+        await log_error(None, error_message)
         raise
 
-def get_temp_link_info(link_id):
+async def get_temp_link_info(link_id):
     """Получение информации о временной ссылке"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Проверяем срок действия ссылки
-    c.execute('''
-        SELECT expires_at
-        FROM temp_links
-        WHERE link_id = ? AND expires_at > datetime('now')
-    ''', (link_id,))
-    
-    result = c.fetchone()
-    if not result:
-        conn.close()
+    try:
+        # Получаем текущее московское время
+        import pytz
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Получаем информацию о ссылке
+            cursor = await conn.execute('SELECT expires_at FROM temp_links WHERE link_id = ?', (link_id,))
+            result = await cursor.fetchone()
+            
+            if not result:
+                return None
+                
+            expires_at = result[0]
+            
+            # Очищаем дату от микросекунд, если они есть
+            clean_expires_at = expires_at
+            if '.' in expires_at:
+                clean_expires_at = expires_at.split('.')[0]
+                
+            # Проверяем, не истек ли срок действия
+            if clean_expires_at <= current_time:
+                logger.info(f"Ссылка {link_id} истекла ({clean_expires_at} <= {current_time})")
+                return None
+            
+            # Получаем список файлов
+            cursor = await conn.execute('''
+                SELECT file_path, original_name
+                FROM temp_link_files
+                WHERE link_id = ?
+            ''', (link_id,))
+            
+            files = await cursor.fetchall()
+            
+            return {
+                'expires_at': clean_expires_at,
+                'files': files
+            }
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о ссылке {link_id}: {e}")
         return None
-    
-    # Получаем список файлов
-    c.execute('''
-        SELECT file_path, original_name
-        FROM temp_link_files
-        WHERE link_id = ?
-    ''', (link_id,))
-    
-    files = c.fetchall()
-    conn.close()
-    
-    return {
-        'expires_at': result[0],
-        'files': files
-    }
 
-def cleanup_expired_links():
+async def cleanup_expired_links(context=None):
     """Очистка истекших временных ссылок"""
     try:
         # Проверяем и создаем директорию для временных ссылок
         if not os.path.exists(TEMP_LINKS_DIR):
             os.makedirs(TEMP_LINKS_DIR)
             logger.info(f"Создана директория для временных ссылок: {TEMP_LINKS_DIR}")
-            
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
         
-        try:
-            # Получаем список истекших ссылок
-            c.execute('''
-                SELECT link_id
-                FROM temp_links
-                WHERE expires_at <= datetime('now')
-            ''')
+        # Получаем текущее московское время
+        import pytz
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Очистка истекших ссылок, текущее время (Москва): {current_time}")
             
-            expired_links = c.fetchall()
-            logger.info(f"Найдено {len(expired_links)} истекших ссылок")
-            
-            # Удаляем файлы и записи из базы данных
-            for link_id in expired_links:
-                # Получаем список файлов для удаления
-                c.execute('SELECT file_path FROM temp_link_files WHERE link_id = ?', (link_id[0],))
-                files = c.fetchall()
+        async with aiosqlite.connect(DB_PATH) as conn:
+            try:
+                # Получаем список всех ссылок для проверки
+                cursor = await conn.execute('SELECT link_id, expires_at FROM temp_links')
+                all_links = await cursor.fetchall()
                 
-                # Удаляем файлы
-                for file_path in files:
-                    try:
-                        if os.path.exists(file_path[0]):
-                            os.remove(file_path[0])
-                            logger.info(f"Удален файл: {file_path[0]}")
-                    except Exception as e:
-                        error_message = f"Ошибка при удалении файла {file_path[0]}: {str(e)}"
-                        logger.error(error_message)
+                expired_links = []
+                for link in all_links:
+                    link_id, expires_at = link
+                    
+                    # Очищаем дату от микросекунд, если они есть
+                    clean_expires_at = expires_at
+                    if '.' in expires_at:
+                        clean_expires_at = expires_at.split('.')[0]
+                    
+                    # Проверяем, истек ли срок действия
+                    if clean_expires_at <= current_time:
+                        expired_links.append((link_id,))
+                        logger.info(f"Найдена истекшая ссылка {link_id}, срок действия до: {clean_expires_at}")
                 
-                # Удаляем записи из базы данных
-                c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id[0],))
-            
-            conn.commit()
-            
-        except sqlite3.Error as e:
-            conn.rollback()
-            error_message = f"Ошибка базы данных при очистке истекших ссылок: {str(e)}"
-            logger.error(error_message)
-            
-        finally:
-            conn.close()
+                logger.info(f"Найдено {len(expired_links)} истекших ссылок")
+                
+                # Удаляем файлы и записи из базы данных
+                for link_id in expired_links:
+                    # Получаем список файлов для удаления
+                    cursor = await conn.execute('SELECT file_path FROM temp_link_files WHERE link_id = ?', (link_id[0],))
+                    files = await cursor.fetchall()
+                    
+                    # Удаляем файлы
+                    for file_path in files:
+                        try:
+                            if os.path.exists(file_path[0]):
+                                os.remove(file_path[0])
+                                logger.info(f"Удален файл: {file_path[0]}")
+                        except Exception as e:
+                            error_message = f"Ошибка при удалении файла {file_path[0]}: {str(e)}"
+                            logger.error(error_message)
+                    
+                    # Удаляем записи из базы данных
+                    await conn.execute('DELETE FROM temp_link_files WHERE link_id = ?', (link_id[0],))
+                    await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id[0],))
+                    logger.info(f"Удалены записи о хранилище {link_id[0]} из базы данных")
+                
+                await conn.commit()
+                
+            except sqlite3.Error as e:
+                await conn.rollback()
+                error_message = f"Ошибка базы данных при очистке истекших ссылок: {str(e)}"
+                logger.error(error_message)
             
     except Exception as e:
         error_message = f"Критическая ошибка при очистке истекших ссылок: {str(e)}"
         logger.error(error_message)
 
-def get_temp_link_keyboard():
-    """Создание клавиатуры для меню временных ссылок"""
-    keyboard = [
-        ['✅ Завершить'],
-        ['Назад']
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
 async def process_temp_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка создания временной ссылки"""
-    if not check_user_plus_rights(update.effective_user.id):
-        await update.message.reply_text("У вас нет прав для использования этой функции.")
-        return await show_menu(update, context)
-    
-    # Создаем клавиатуру с выбором срока хранения
-    keyboard = [
-        ['1 час', '6 часов'],
-        ['12 часов', '24 часа'],
-        ['Назад']
-    ]
-    
-    await update.message.reply_text(
-        "Выберите срок хранения временного хранилища:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
-    
-    return TEMP_LINK_DURATION
+    try:
+        # Получаем список активных хранилищ пользователя
+        storage_list = await get_user_active_storage(update.effective_user.id)
+        
+        if storage_list:
+            # Берем первое активное хранилище
+            storage = storage_list[0]
+            storage_url = f"{TEMP_LINK_DOMAIN}/{storage['link_id']}"
+            await update.message.reply_text(
+                f"У вас уже есть активное временное хранилище!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Срок действия до: {format_datetime(storage['expires_at'])}\n\n"
+                f"Вы можете продолжать использовать это хранилище или дождаться окончания его срока действия для создания нового.",
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+        
+        # Создаем клавиатуру с выбором срока хранения
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['3 дня', '7 дней'],
+            ['14 дней', '30 дней'],
+            ['Назад']
+        ]
+        
+        await update.message.reply_text(
+            "Выберите срок хранения временного хранилища:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        
+        return TEMP_LINK_DURATION
+        
+    except Exception as e:
+        logger.error(f"Ошибка при проверке хранилища: {str(e)}")
+        await update.message.reply_text(
+            "Произошла ошибка при проверке хранилища. Попробуйте позже.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
 
 async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка выбора срока хранения временного хранилища"""
@@ -1289,7 +1434,11 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         '1 час': 1,
         '6 часов': 6,
         '12 часов': 12,
-        '24 часа': 24
+        '24 часа': 24,
+        '3 дня': 72,
+        '7 дней': 168,
+        '14 дней': 336,
+        '30 дней': 720
     }
     
     if update.message.text not in duration_map:
@@ -1298,48 +1447,78 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         )
         return TEMP_LINK_DURATION
     
-    duration_hours = duration_map[update.message.text]
-    
     try:
+        # Проверяем еще раз наличие активного хранилища
+        storage_list = await get_user_active_storage(update.effective_user.id)
+        
+        if storage_list:
+            # Берем первое активное хранилище
+            storage = storage_list[0]
+            storage_url = f"{TEMP_LINK_DOMAIN}/{storage['link_id']}"
+            
+            # Создаем клавиатуру с опцией удаления
+            keyboard = [
+                [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                [KeyboardButton("Назад")]
+            ]
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                f"У вас уже есть активное временное хранилище!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Срок действия до: {format_datetime(storage['expires_at'])}\n\n"
+                f"Вы можете продолжать использовать это хранилище или удалить его.",
+                reply_markup=markup
+            )
+            context.user_data['current_storage'] = storage['link_id']
+            return TEMP_LINK
+            
+        duration_hours = duration_map[update.message.text]
+        
         # Создаем временное хранилище
-        link_id = generate_temp_link_id()
+        link_id = await generate_temp_link_id()
         expires_at = datetime.now() + timedelta(hours=duration_hours)
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        # Создаем запись о временном хранилище
+        async with aiosqlite.connect(DB_PATH) as conn:
+            await conn.execute('''
+                INSERT INTO temp_links (link_id, expires_at, user_id, created_at, extension_count)
+                VALUES (?, ?, ?, datetime('now'), 0)
+            ''', (link_id, expires_at, update.effective_user.id))
+            
+            await conn.commit()
         
-        try:
-            # Создаем запись о временном хранилище
-            c.execute('''
-                INSERT INTO temp_links (link_id, expires_at)
-                VALUES (?, ?)
-            ''', (link_id, expires_at))
+        # Формируем URL для доступа к хранилищу
+        storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
+        
+        # Отправляем пользователю ссылку с кнопкой удаления
+        keyboard = [
+            [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+            [KeyboardButton("Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Форматируем текст о сроке действия
+        duration_text = ""
+        if duration_hours < 24:
+            duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+        elif duration_hours < 48:
+            duration_text = "1 день"
+        else:
+            days = duration_hours // 24
+            duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
             
-            conn.commit()
-            
-            # Формируем URL для доступа к хранилищу
-            storage_url = f"{TEMP_LINK_DOMAIN}/space/{link_id}"
-            
-            # Отправляем пользователю ссылку
-            await update.message.reply_text(
-                f"✅ Временное хранилище создано!\n\n"
-                f"🔗 Ссылка: {storage_url}\n"
-                f"⏱ Срок действия: {duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}\n\n"
-                f"⚠️ Хранилище будет доступно до {expires_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                f"Вы можете загружать файлы через веб-интерфейс.",
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            
-            return MENU
-            
-        except sqlite3.Error as e:
-            conn.rollback()
-            error_message = f"Ошибка базы данных при создании временного хранилища: {str(e)}"
-            logger.error(error_message)
-            raise
-            
-        finally:
-            conn.close()
+        await update.message.reply_text(
+            f"✅ Временное хранилище создано!\n\n"
+            f"🔗 Ссылка: {storage_url}\n"
+            f"⏱ Срок действия: {duration_text}\n\n"
+            f"⚠️ Хранилище будет доступно до {format_datetime(expires_at)}\n\n"
+            f"Вы можете загружать файлы через веб-интерфейс.",
+            reply_markup=markup
+        )
+        
+        context.user_data['current_storage'] = link_id
+        return TEMP_LINK
             
     except Exception as e:
         error_message = f"Ошибка при создании временного хранилища: {str(e)}"
@@ -1351,58 +1530,385 @@ async def process_temp_link_duration(update: Update, context: ContextTypes.DEFAU
         )
         return MENU
 
-def get_user_lines_to_keep(user_id):
-    """Получение персонального количества строк для пользователя"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else DEFAULT_LINES_TO_KEEP
+async def extend_storage_duration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Продление срока хранения временного хранилища"""
+    if update.message.text == "Назад":
+        # Возвращаемся к управлению хранилищем
+        link_id = context.user_data.get('extend_storage')
+        if link_id:
+            # Создаем клавиатуру для управления хранилищем
+            keyboard = [
+                [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                [KeyboardButton("Назад")]
+            ]
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            # Получаем информацию о хранилище
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('SELECT expires_at, extension_count FROM temp_links WHERE link_id = ? AND user_id = ?', 
+                     (link_id, update.effective_user.id))
+            result = c.fetchone()
+            
+            if not result:
+                await update.message.reply_text(
+                    "Хранилище не найдено или уже удалено.", 
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+                conn.close()
+                return MENU
+                
+            expires_at, extension_count = result
+            extension_count = extension_count or 0  # Если None, то считаем как 0
+            
+            # Проверяем, достигнут ли лимит продлений
+            max_extensions = 1  # Максимально допустимое количество продлений
+            if extension_count >= max_extensions:
+                await update.message.reply_text(
+                    f"Достигнут лимит продлений хранилища (максимум {max_extensions}). Создайте новое хранилище.", 
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+                conn.close()
+                return MENU
+                
+            # Разбираем дату
+            current_expires_at = datetime.strptime(format_datetime(expires_at), '%Y-%m-%d %H:%M:%S')
+            
+            # Проверяем, не истек ли срок хранилища
+            if current_expires_at <= datetime.now():
+                await update.message.reply_text(
+                    "Срок действия хранилища уже истек. Создайте новое хранилище.", 
+                    reply_markup=get_menu_keyboard(update.effective_user.id)
+                )
+                conn.close()
+                return MENU
+                
+            # Рассчитываем новый срок действия
+            duration_hours = duration_map[update.message.text]
+            new_expires_at = current_expires_at + timedelta(hours=duration_hours)
+            
+            # Обновляем срок действия и счетчик продлений в базе данных
+            c.execute('UPDATE temp_links SET expires_at = ?, extension_count = extension_count + 1 WHERE link_id = ?', 
+                     (new_expires_at, link_id))
+            conn.commit()
+            
+            # Форматируем текст о сроке продления
+            duration_text = ""
+            if duration_hours < 24:
+                duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+            elif duration_hours < 48:
+                duration_text = "1 день"
+            else:
+                days = duration_hours // 24
+                duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
+            
+            # Создаем клавиатуру для управления хранилищем
+            keyboard = [
+                [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+                [KeyboardButton("Назад")]
+            ]
+            markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
+            
+            await update.message.reply_text(
+                f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
+                f"🔗 Ссылка: {storage_url}\n"
+                f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}\n"
+                f"🔄 Осталось продлений: {max_extensions - (extension_count + 1)}\n\n"
+                f"Выберите действие:",
+                reply_markup=markup
+            )
+            
+            # Обновляем данные пользователя
+            context.user_data['current_storage'] = link_id
+            if 'extend_storage' in context.user_data:
+                del context.user_data['extend_storage']
+            
+            return TEMP_LINK
+        
+        # Если нет активного хранилища, возвращаемся в главное меню
+        await show_menu(update, context)
+        return MENU
+    
+    # Определяем срок продления в часах
+    duration_map = {
+        '1 час': 1,
+        '6 часов': 6,
+        '12 часов': 12,
+        '24 часа': 24,
+        '3 дня': 72,
+        '7 дней': 168,
+        '14 дней': 336,
+        '30 дней': 720
+    }
+    
+    if update.message.text not in duration_map:
+        await update.message.reply_text(
+            "Пожалуйста, выберите срок продления из предложенных вариантов."
+        )
+        return TEMP_LINK_EXTEND
+    
+    try:
+        link_id = context.user_data.get('extend_storage')
+        if not link_id:
+            await update.message.reply_text(
+                "Не найдено активное хранилище для продления.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+            
+        # Получаем текущий срок действия
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT expires_at, extension_count FROM temp_links WHERE link_id = ? AND user_id = ?', 
+                 (link_id, update.effective_user.id))
+        result = c.fetchone()
+        
+        if not result:
+            await update.message.reply_text(
+                "Хранилище не найдено или уже удалено.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            conn.close()
+            return MENU
+            
+        expires_at, extension_count = result
+        extension_count = extension_count or 0  # Если None, то считаем как 0
+        
+        # Проверяем, достигнут ли лимит продлений
+        max_extensions = 1  # Максимально допустимое количество продлений
+        if extension_count >= max_extensions:
+            await update.message.reply_text(
+                f"Достигнут лимит продлений хранилища (максимум {max_extensions}). Создайте новое хранилище.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            conn.close()
+            return MENU
+            
+        # Разбираем дату
+        current_expires_at = datetime.strptime(format_datetime(expires_at), '%Y-%m-%d %H:%M:%S')
+        
+        # Проверяем, не истек ли срок хранилища
+        if current_expires_at <= datetime.now():
+            await update.message.reply_text(
+                "Срок действия хранилища уже истек. Создайте новое хранилище.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            conn.close()
+            return MENU
+            
+        # Рассчитываем новый срок действия
+        duration_hours = duration_map[update.message.text]
+        new_expires_at = current_expires_at + timedelta(hours=duration_hours)
+        
+        # Обновляем срок действия и счетчик продлений в базе данных
+        c.execute('UPDATE temp_links SET expires_at = ?, extension_count = extension_count + 1 WHERE link_id = ?', 
+                 (new_expires_at, link_id))
+        conn.commit()
+        
+        # Форматируем текст о сроке продления
+        duration_text = ""
+        if duration_hours < 24:
+            duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+        elif duration_hours < 48:
+            duration_text = "1 день"
+        else:
+            days = duration_hours // 24
+            duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
+        
+        # Создаем клавиатуру для управления хранилищем
+        keyboard = [
+            [KeyboardButton("🗑️ Удалить хранилище"), KeyboardButton("🔄 Продлить срок хранилища")],
+            [KeyboardButton("Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        storage_url = f"{TEMP_LINK_DOMAIN}/{link_id}"
+        
+        await update.message.reply_text(
+            f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
+            f"🔗 Ссылка: {storage_url}\n"
+            f"⏱ Новый срок действия до: {format_datetime(new_expires_at)}\n"
+            f"🔄 Осталось продлений: {max_extensions - (extension_count + 1)}\n\n"
+            f"Выберите действие:",
+            reply_markup=markup
+        )
+        
+        # Обновляем данные пользователя
+        context.user_data['current_storage'] = link_id
+        if 'extend_storage' in context.user_data:
+            del context.user_data['extend_storage']
+        
+        return TEMP_LINK
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        error_message = f"Ошибка при продлении срока хранилища: {str(e)}"
+        logger.error(error_message)
+        
+        await update.message.reply_text(
+            "Произошла ошибка при продлении срока хранилища. Попробуйте снова.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+        
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
-def set_user_lines_to_keep(user_id, lines):
-    """Установка персонального количества строк для пользователя"""
+async def delete_user_storage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление временного хранилища пользователя"""
+    if update.message.text == "Назад":
+        await show_menu(update, context)
+        return MENU
+    
+    if update.message.text == "🔄 Продлить срок хранилища":
+        # Переходим к выбору срока продления
+        link_id = context.user_data.get('current_storage')
+        if not link_id:
+            await update.message.reply_text(
+                "Не найдено активное хранилище для продления.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+        
+        # Создаем клавиатуру с выбором срока продления
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['3 дня', '7 дней'],
+            ['14 дней', '30 дней'],
+            ['Назад']
+        ]
+        
+        await update.message.reply_text(
+            "Выберите срок, на который хотите продлить хранилище:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        
+        # Переходим к состоянию продления срока
+        context.user_data['extend_storage'] = link_id
+        return TEMP_LINK_EXTEND
+    
+    if update.message.text != "🗑️ Удалить хранилище":
+        await show_menu(update, context)
+        return MENU
+    
+    link_id = context.user_data.get('current_storage')
+    if not link_id:
+        await update.message.reply_text(
+            "Не найдено активное хранилище для удаления.", 
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+    
+    try:
+        # Проверяем существование хранилища
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('''
+            SELECT link_id FROM temp_links 
+            WHERE link_id = ? AND user_id = ?
+        ''', (link_id, update.effective_user.id))
+        
+        if not c.fetchone():
+            await update.message.reply_text(
+                "Хранилище не найдено или уже удалено.", 
+                reply_markup=get_menu_keyboard(update.effective_user.id)
+            )
+            return MENU
+        
+        # Удаляем файлы хранилища
+        storage_path = os.path.join(BOT_DIR, 'temp_storage', link_id)
+        if os.path.exists(storage_path):
+            shutil.rmtree(storage_path)
+        
+        # Удаляем запись из базы данных
+        c.execute('DELETE FROM temp_links WHERE link_id = ?', (link_id,))
+        conn.commit()
+        
+        await update.message.reply_text(
+            "✅ Хранилище успешно удалено!", 
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        del context.user_data['current_storage']
+        return MENU
+        
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        error_message = f"Ошибка при удалении хранилища: {str(e)}"
+        logger.error(error_message)
+        
+        await update.message.reply_text(
+            "Произошла ошибка при удалении хранилища. Попробуйте снова.",
+            reply_markup=get_menu_keyboard(update.effective_user.id)
+        )
+        return MENU
+        
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+def get_user_lines_to_keep(user_id):
+    """Получение количества строк для пользователя"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)', 
-              (user_id, lines))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        if not result:
+            c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+            result = c.fetchone()
+        return result[0] if result else 10
+    finally:
+        conn.close()
 
 def get_lines_to_keep():
-    """Получение количества строк для сохранения"""
+    """Получение глобального количества строк"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
     result = c.fetchone()
     conn.close()
-    return result[0] if result else DEFAULT_LINES_TO_KEEP
+    return result[0] if result else 10
 
 def set_lines_to_keep(lines):
-    """Установка количества строк для сохранения"""
+    """Установка глобального количества строк"""
     conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute('UPDATE bot_status SET lines_to_keep = ? WHERE id = 1', (lines,))
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_all_users():
     """Получение списка всех пользователей"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT user_id, username, is_verified, role, 
-                 usage_count, merged_count, qr_count FROM users''')
+                 usage_count, merged_count, qr_count, is_banned FROM users''')
     users = c.fetchall()
     conn.close()
     return users
 
-def remove_user(user_id):
+async def get_all_users_async():
+    """Получение списка всех пользователей"""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute('''SELECT user_id, username, is_verified, role, 
+                 usage_count, merged_count, qr_count, is_banned FROM users''')
+        users = await cursor.fetchall()
+    return users
+
+async def remove_user(user_id):
     """Удаление пользователя из базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+        await conn.execute('DELETE FROM user_settings WHERE user_id = ?', (user_id,))
+        await conn.commit()
 
 async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка файла"""
@@ -1494,7 +2000,7 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption=f"Найдено {len(lines)} строк. Показаны последние {lines_to_keep}."
                 )
             # Увеличиваем счетчик после успешной отправки
-            increment_usage_count(update.effective_user.id)
+            await increment_usage_count(update.effective_user.id)
         finally:
             # Удаляем временный файл
             if os.path.exists(output_filename):
@@ -1506,44 +2012,564 @@ async def process_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         error_message = f"Произошла ошибка при обработке файла: {str(e)}"
-        log_error(update.effective_user.id, error_message)
+        await log_error(update.effective_user.id, error_message)
         print(f"Error for user {update.effective_user.id}: {error_message}")
         await update.message.reply_text(
             "Произошла ошибка при обработке файла. Пожалуйста, попробуйте снова."
         )
         return PROCESS_FILE
 
-def increment_usage_count(user_id):
-    """Увеличение счетчика обработанных файлов"""
-    conn = safe_db_connect()
+async def increment_usage_count(user_id):
+    """Увеличение счетчика использования бота"""   
+    conn = await safe_db_connect()
     if not conn:
         return
+    try:
+        await conn.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
+        await conn.commit()
+    except sqlite3.Error as e:
+            print(f"Ошибка при обновлении счетчика использования: {e}")
+
+async def get_user_active_storage(user_id,settings_flag=False):
+    """Получение активных временных ссылок пользователя"""
+    try:
+        # Получаем текущее московское время в формате без микросекунд
+        import pytz
+        moscow_tz = pytz.timezone('Europe/Moscow')
+        now = datetime.now(moscow_tz)
+        current_time = now.strftime('%Y-%m-%d %H:%M:%S')
+        
+        logger.info(f"Получение хранилищ пользователя {user_id}, текущее время (Москва): {current_time}")
+        
+        # Проверяем, является ли пользователь администратором
+        is_user_admin = is_admin(user_id)
+        
+        async with aiosqlite.connect(DB_PATH) as conn:
+            # Если пользователь - админ, получаем все хранилища, иначе только его собственные
+            if is_user_admin and settings_flag:
+                cursor = await conn.execute('''
+                    SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count, tl.user_id, u.username
+                    FROM temp_links tl
+                    LEFT JOIN temp_link_files tlf ON tl.link_id = tlf.link_id
+                    LEFT JOIN users u ON tl.user_id = u.user_id
+                    GROUP BY tl.link_id
+                    ORDER BY tl.expires_at ASC
+                ''')
+            else:
+                cursor = await conn.execute('''
+                    SELECT tl.link_id, tl.expires_at, COUNT(tlf.file_id) as file_count, tl.user_id, u.username
+                    FROM temp_links tl
+                    LEFT JOIN temp_link_files tlf ON tl.link_id = tlf.link_id
+                    LEFT JOIN users u ON tl.user_id = u.user_id
+                    WHERE tl.user_id = ?
+                    GROUP BY tl.link_id
+                    ORDER BY tl.expires_at ASC
+                ''', (user_id,))
+            result = await cursor.fetchall()
+            
+            # Получаем детали по каждой ссылке
+            storage_list = []
+            for link_id, expires_at, file_count, creator_id, creator_username in result:
+                # Очищаем дату от микросекунд, если они есть
+                clean_expires_at = expires_at
+                if '.' in expires_at:
+                    clean_expires_at = expires_at.split('.')[0]
+                
+                # Проверяем, не истек ли срок действия
+                if clean_expires_at <= current_time:
+                    logger.info(f"Хранилище {link_id} истекло ({clean_expires_at} <= {current_time})")
+                    continue
+                
+                # Получаем имена файлов
+                cursor = await conn.execute('''
+                    SELECT original_name 
+                    FROM temp_link_files 
+                    WHERE link_id = ?
+                ''', (link_id,))
+                
+                files = await cursor.fetchall()
+                file_names = [file[0] for file in files]
+                
+                # Форматируем оставшееся время
+                expires_date = datetime.strptime(clean_expires_at, '%Y-%m-%d %H:%M:%S')
+                time_left = expires_date - now.replace(tzinfo=None)
+                days = time_left.days
+                hours, remainder = divmod(time_left.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                
+                time_str = f"{days}д {hours}ч {minutes}м" if days > 0 else f"{hours}ч {minutes}м"
+                
+                # Определяем имя создателя
+                creator_name = creator_username or f"ID: {creator_id}"
+                
+                storage_list.append({
+                    'link_id': link_id,
+                    'expires_at': clean_expires_at,
+                    'file_count': file_count,
+                    'file_names': file_names,
+                    'time_left': time_str,
+                    'creator_id': creator_id,
+                    'creator_name': creator_name
+                })
+                
+                logger.info(f"Найдено активное хранилище {link_id}, срок действия до: {clean_expires_at}, создатель: {creator_name}")
+            
+            return storage_list
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка хранилища: {e}")
+        return []
+
+def format_datetime(dt):
+    """Форматирование даты без миллисекунд"""
+    if isinstance(dt, str):
+        if '.' in dt:
+            dt = dt.split('.')[0]
+        return dt
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+async def show_storage_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список активных хранилищ"""
+    try:
+        # Получаем список активных хранилищ
+        storage_list = await get_user_active_storage(update.effective_user.id, settings_flag=True)
+        
+        if not storage_list:
+            await update.message.reply_text(
+                "Активных хранилищ не найдено.",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            return STORAGE_MANAGEMENT
+        
+        # Создаем клавиатуру с хранилищами
+        keyboard = []
+        storage_info = {}
+        
+        for storage in storage_list:
+            link_id = storage['link_id']
+            expires_at = storage['expires_at']
+            file_count = storage['file_count']
+            time_left = storage['time_left']
+            creator_name = storage['creator_name']
+            
+            # Получаем количество продлений для этого хранилища
+            async with aiosqlite.connect(DB_PATH) as conn:
+                cursor = await conn.execute('SELECT extension_count FROM temp_links WHERE link_id = ?', 
+                    (link_id,))
+                result = await cursor.fetchone()
+                extension_count = result[0] if result and result[0] is not None else 0
+                # Максимум 1 продление
+                max_extensions = 1  # Максимально допустимое количество продлений
+                extensions_left = max_extensions - extension_count
+            
+            # Добавляем информацию о создателе в текст кнопки
+            storage_text = f"Хранилище {link_id[:8]}... ({file_count} файлов, {time_left}) от {creator_name}"
+            keyboard.append([KeyboardButton(text=storage_text)])
+            storage_info[storage_text] = {
+                'link_id': link_id,
+                'expires_at': expires_at,
+                'file_names': storage['file_names'],
+                'creator_name': creator_name,
+                'creator_id': storage['creator_id'],
+                'extensions_left': extensions_left
+            }
+        
+        keyboard.append([KeyboardButton(text="Назад")])
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Сохраняем информацию о хранилищах в контексте
+        context.user_data['storage_info'] = storage_info
+        
+        await update.message.reply_text(
+            "Выберите хранилище для управления:",
+            reply_markup=markup
+        )
+        
+        return STORAGE_MANAGEMENT
+        
+    except Exception as e:
+        error_message = f"Ошибка при получении списка хранилищ: {str(e)}"
+        logger.error(error_message)
+        await update.message.reply_text(
+            "Произошла ошибка при получении списка хранилищ.",
+            reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+        )
+        return STORAGE_MANAGEMENT
+
+async def process_storage_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка управления хранилищами"""
+    text = update.message.text
     
+    if text == "Назад":
+        await settings_command(update, context)
+        return SETTINGS
+    
+    storage_info = context.user_data.get('storage_info', {})
+    
+    if text in storage_info:
+        # Хранилище выбрано, показываем действия
+        storage_data = storage_info[text]
+        context.user_data['selected_storage'] = storage_data
+        
+        keyboard = [
+            [KeyboardButton(text="🗑️ Удалить хранилище")],
+            [KeyboardButton(text="🔄 Продлить срок")],
+            [KeyboardButton(text="Назад")]
+        ]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        await update.message.reply_text(
+            f"Управление хранилищем:\n\n"
+            f"🔗 ID: {storage_data['link_id']}\n"
+            f"👤 Создатель: {storage_data['creator_name']}\n"
+            f"⏱ Срок действия до: {format_datetime(storage_data['expires_at'])}\n"
+            f"🔄 Осталось продлений: {storage_data.get('extensions_left', 0)}\n\n"
+            f"Выберите действие:",
+            reply_markup=markup
+        )
+        
+        return STORAGE_MANAGEMENT
+    
+    elif text == "🗑️ Удалить хранилище":
+        storage_data = context.user_data.get('selected_storage')
+        if not storage_data:
+            await update.message.reply_text("Сначала выберите хранилище.")
+            return await show_storage_list(update, context)
+        
+        try:
+            # Удаляем файлы хранилища
+            storage_path = os.path.join(BOT_DIR, 'temp_storage', storage_data['link_id'])
+            if os.path.exists(storage_path):
+                shutil.rmtree(storage_path)
+            
+            # Удаляем запись из базы данных асинхронно
+            async with aiosqlite.connect(DB_PATH) as conn:
+                await conn.execute('DELETE FROM temp_links WHERE link_id = ?', (storage_data['link_id'],))
+                await conn.commit()
+            
+            await update.message.reply_text(
+                "✅ Хранилище успешно удалено!",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            
+            # Очищаем выбранное хранилище
+            if 'selected_storage' in context.user_data:
+                del context.user_data['selected_storage']
+            
+            return await show_storage_list(update, context)
+            
+        except Exception as e:
+            error_message = f"Ошибка при удалении хранилища: {str(e)}"
+            logger.error(error_message)
+            await update.message.reply_text(
+                "Произошла ошибка при удалении хранилища.",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            return STORAGE_MANAGEMENT
+    
+    elif text == "🔄 Продлить срок":
+        storage_data = context.user_data.get('selected_storage')
+        if not storage_data:
+            await update.message.reply_text("Сначала выберите хранилище.")
+            return await show_storage_list(update, context)
+        
+        # Создаем клавиатуру с выбором срока продления
+        keyboard = [
+            ['1 час', '6 часов'],
+            ['12 часов', '24 часа'],
+            ['3 дня', '7 дней'],
+            ['14 дней', '30 дней'],
+            ['Назад']
+        ]
+        
+        await update.message.reply_text(
+            "Выберите срок, на который хотите продлить хранилище:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        
+        return STORAGE_MANAGEMENT
+    
+    elif text in ['1 час', '6 часов', '12 часов', '24 часа', '3 дня', '7 дней', '14 дней', '30 дней']:
+        storage_data = context.user_data.get('selected_storage')
+        if not storage_data:
+            await update.message.reply_text("Сначала выберите хранилище.")
+            return await show_storage_list(update, context)
+        
+        # Определяем срок продления в часах
+        duration_map = {
+            '1 час': 1,
+            '6 часов': 6,
+            '12 часов': 12,
+            '24 часа': 24,
+            '3 дня': 72,
+            '7 дней': 168,
+            '14 дней': 336,
+            '30 дней': 720
+        }
+        
+        try:
+            duration_hours = duration_map[text]
+            
+            # Получаем текущее количество продлений хранилища
+            async with aiosqlite.connect(DB_PATH) as conn:
+                cursor = await conn.execute('SELECT extension_count FROM temp_links WHERE link_id = ?', 
+                         (storage_data['link_id'],))
+                result = await cursor.fetchone()
+                extension_count = result[0] if result and result[0] is not None else 0
+                
+                # Проверяем, достигнут ли лимит продлений
+                max_extensions = 1  # Максимально допустимое количество продлений
+                if extension_count >= max_extensions:
+                    await update.message.reply_text(
+                        f"Достигнут лимит продлений хранилища ({max_extensions}). Создайте новое хранилище.",
+                        reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+                    )
+                    return STORAGE_MANAGEMENT
+            
+                # Создаем и форматируем новую дату без микросекунд
+                expires_dt = datetime.now() + timedelta(hours=duration_hours)
+                new_expires_at = expires_dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Обновляем срок действия и счетчик продлений в базе данных
+                await conn.execute('UPDATE temp_links SET expires_at = ?, extension_count = extension_count + 1 WHERE link_id = ?', 
+                         (new_expires_at, storage_data['link_id']))
+                await conn.commit()
+            
+            # Получаем обновленное количество продлений
+            cursor = await conn.execute('SELECT extension_count FROM temp_links WHERE link_id = ?', 
+                     (storage_data['link_id'],))
+            result = await cursor.fetchone()
+            extension_count = result[0] if result and result[0] is not None else 0
+            # Максимум 1 продление, но нужно учесть что продление уже произошло
+            max_extensions = 1  # Максимально допустимое количество продлений
+            extensions_left = max_extensions - (extension_count + 1)  
+            
+            # Форматируем текст о сроке продления
+            duration_text = ""
+            if duration_hours < 24:
+                duration_text = f"{duration_hours} {'час' if duration_hours == 1 else 'часа' if 1 < duration_hours < 5 else 'часов'}"
+            elif duration_hours < 48:
+                duration_text = "1 день"
+            else:
+                days = duration_hours // 24
+                duration_text = f"{days} {'день' if days == 1 else 'дня' if 1 < days < 5 else 'дней'}"
+            
+            await update.message.reply_text(
+                f"✅ Срок действия хранилища успешно продлен на {duration_text}!\n\n"
+                f"⏱ Новый срок действия до: {new_expires_at}\n"
+                f"🔄 Осталось продлений: {extensions_left}",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            
+            return await show_storage_list(update, context)
+            
+        except Exception as e:
+            error_message = f"Ошибка при продлении срока хранилища: {str(e)}"
+            logger.error(error_message)
+            await update.message.reply_text(
+                "Произошла ошибка при продлении срока хранилища.",
+                reply_markup=ReplyKeyboardMarkup([['Назад']], resize_keyboard=True)
+            )
+            return STORAGE_MANAGEMENT
+    
+    return STORAGE_MANAGEMENT
+
+def is_user_banned(user_id):
+    """Проверка блокировки пользователя"""
+    conn = sqlite3.connect(DB_PATH)
     try:
         c = conn.cursor()
-        c.execute('UPDATE users SET usage_count = usage_count + 1 WHERE user_id = ?', (user_id,))
-        conn.commit()
-    except sqlite3.Error as e:
-        print(f"Ошибка при обновлении счетчика обработанных файлов: {e}")
+        c.execute('SELECT is_banned FROM users WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        return result[0] if result else False
     finally:
         conn.close()
 
-def main():
+async def ban_user(bot, user_id, ban=True):
+    """Блокировка/разблокировка пользователя"""
     try:
-        # Создаем необходимые директории
-        ensure_directories()
+        # Блокируем/разблокируем в базе данных
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('UPDATE users SET is_banned = ? WHERE user_id = ?', (ban, user_id))
+        conn.commit()
+        conn.close()
         
-        # Создаем и настраиваем приложение
-        application = Application.builder().token(TOKEN).build()
+        # Обновляем множество заблокированных пользователей
+        if ban:
+            user_ban_list.add(user_id)
+        else:
+            user_ban_list.discard(user_id)
+            
+        logger.info(f"Пользователь {user_id} {'заблокирован' if ban else 'разблокирован'}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка при блокировке/разблокировке пользователя {user_id}: {e}")
+        return False
+
+async def notify_admins_about_spam(bot, user_id, username, action_count):
+    """Отправка уведомления администраторам о спаме"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM users WHERE role = ?', (UserRole.ADMIN,))
+        admins = c.fetchall()
+        conn.close()
         
-        # Создаем базу данных
-        setup_database()
+        message = (
+            f"⚠️ *Обнаружен спам!*\n\n"
+            f"👤 Пользователь: {username or f'ID: {user_id}'}\n"
+            f"🆔 ID: `{user_id}`\n"
+            f"📊 Количество действий: {action_count}\n"
+            f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Рекомендуется проверить активность пользователя."
+        )
         
-        # Запускаем очистку истекших ссылок
-        cleanup_expired_links()
+        for admin in admins:
+            try:
+                await bot.send_message(
+                    chat_id=admin[0],
+                    text=message,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"Ошибка при отправке уведомления администратору {admin[0]}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомлений администраторам: {e}")
+
+async def check_action_cooldown(user_id):
+    """Проверка защиты от спама"""
+    current_time = time.time()
+    
+    # Если пользователь не в кэше, добавляем его
+    if user_id not in user_action_times:
+        user_action_times[user_id] = current_time
+        user_action_counts[user_id] = 1
+        return True
+    
+    # Проверяем последнее время действия
+    last_action_time = user_action_times[user_id]
+    time_diff = current_time - last_action_time
+    
+    # Если прошло менее 2 секунд, увеличиваем счетчик и проверяем
+    if time_diff < 2:
+        user_action_counts[user_id] = user_action_counts.get(user_id, 0) + 1
+        
+        # Если больше 5 быстрых действий, считаем это спамом
+        if user_action_counts[user_id] > 5:
+            # Добавляем предупреждение
+            user_spam_warnings[user_id] = user_spam_warnings.get(user_id, 0) + 1
+            
+            # Если больше 3 предупреждений - банить
+            if user_spam_warnings[user_id] > 3:
+                # Банить пользователя
+                user_ban_list.add(user_id)
+                
+                # Записываем в базу данных
+                async with aiosqlite.connect(DB_PATH) as conn:
+                    await conn.execute('UPDATE users SET is_banned = 1 WHERE user_id = ?', (user_id,))
+                    await conn.commit()
+                
+                # Логируем бан
+                logger.warning(f"Пользователь {user_id} заблокирован за спам")
+                return False
+            
+            # Сбрасываем счетчик
+            user_action_counts[user_id] = 0
+            
+            # Логируем попытку спама
+            logger.warning(f"Обнаружена попытка спама от пользователя {user_id}")
+            return False
+    
+    # Обновляем время действия
+    user_action_times[user_id] = current_time
+    
+    # Если прошло больше 10 секунд, сбрасываем счетчик
+    if time_diff > 10:
+        user_action_counts[user_id] = 1
+    
+    return True
+
+async def cleanup_spam_protection(context=None):
+    """Очистка старых записей в кэше защиты от спама"""
+    current_time = time.time()
+    # Удаляем записи старше 5 минут
+    for user_id in list(user_action_times.keys()):
+        if current_time - user_action_times[user_id] > 300:
+            del user_action_times[user_id]
+            if user_id in user_action_counts:
+                del user_action_counts[user_id]
+            if user_id in user_spam_warnings:
+                del user_spam_warnings[user_id]
+
+async def check_user_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка доступа пользователя с защитой от спама"""
+    user_id = update.effective_user.id
+    
+    # Проверяем блокировку в памяти
+    if user_id in user_ban_list:
+        return False
+    
+    # Проверяем блокировку в базе данных
+    if is_user_banned(user_id):
+        user_ban_list.add(user_id)
+        return False
+    
+    # Для администраторов не применяем ограничения
+    if is_admin(user_id):
+        return True
+    
+    # Проверяем спам
+    if not await check_action_cooldown(user_id):
+        await update.message.reply_text(
+            "Слишком много запросов. Пожалуйста, подождите..."
+        )
+        return False
+    
+    return True
+
+if __name__ == '__main__':
+    try:
+        print("Запуск бота...")
+        
+        # Настройка и запуск бота стандартным методом библиотеки
+        # Не используем asyncio.run() чтобы избежать проблем с циклом событий
+        app = Application.builder().token(TOKEN).build()
+        
+        print("Приложение создано, настраиваем цикл событий...")
+        try:
+            # Получаем текущий цикл событий или создаем новый, если его нет
+            try:
+                loop = asyncio.get_event_loop()
+                print(f"Получен существующий цикл событий: {loop}")
+            except RuntimeError:
+                print("Нет текущего цикла событий, создаем новый...")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                print(f"Создан новый цикл событий: {loop}")
+                
+            # Инициализируем базу данных и создаем директории
+            print("Инициализация базы данных и директорий...")
+            loop.run_until_complete(ensure_directories())
+            loop.run_until_complete(setup_database())
+            print("Инициализация базы данных завершена")
+        except Exception as e:
+            print(f"Ошибка при настройке цикла событий: {e}")
+            raise
+        
+        # Запускаем очистку истекших ссылок через планировщик
+        app.job_queue.run_repeating(cleanup_expired_links, interval=3600, first=10)
+        
+        # Запускаем очистку кэша защиты от спама
+        app.job_queue.run_repeating(cleanup_spam_protection, interval=300, first=300)
+        
+        print("Настройка обработчиков...")
         
         async def restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Восстановление меню для верифицированных пользователей"""
+            if not await check_user_access(update, context):
+                return ConversationHandler.END
+                
             if is_user_verified(update.effective_user.id):
                 if not is_bot_enabled() and not is_admin(update.effective_user.id):
                     await update.message.reply_text("Бот находится на техническом обслуживании. Пожалуйста, подождите.")
@@ -1581,9 +2607,11 @@ def main():
                 QR_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_type)],
                 QR_DATA: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_qr_data)],
                 TEMP_LINK: [
-                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, process_temp_link)
+                    MessageHandler(filters.Document.ALL | filters.TEXT & ~filters.COMMAND, delete_user_storage)
                 ],
-                TEMP_LINK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temp_link_duration)]
+                TEMP_LINK_DURATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_temp_link_duration)],
+                TEMP_LINK_EXTEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, extend_storage_duration)],
+                STORAGE_MANAGEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_storage_management)],
             },
             fallbacks=[
                 CommandHandler('start', start),
@@ -1593,19 +2621,95 @@ def main():
         )
         
         # Добавляем обработчик разговора
-        application.add_handler(conv_handler)
-        
-        # Запускаем бота
+        app.add_handler(conv_handler)
+
+        # Выводим информацию о запуске
         print(f"Бот запущен и готов к работе!")
         print(f"База данных: {DB_PATH}")
         print(f"Временные файлы: {TEMP_DIR}")
         print(f"Логи: {LOG_DIR}")
         print(f"Временные ссылки: {TEMP_LINKS_DIR}")
-        application.run_polling()
-
+        
+        # Запускаем бота через asyncio для правильной обработки остановки
+        loop = asyncio.get_event_loop()
+        
+        # Правильная последовательность инициализации и запуска
+        loop.run_until_complete(app.initialize())
+        loop.run_until_complete(app.updater.initialize())
+        loop.run_until_complete(app.start())
+        loop.run_until_complete(app.updater.start_polling(allowed_updates=Update.ALL_TYPES))
+        
+        try:
+            # Запускаем бесконечный цикл для поддержания работы бота
+            loop.run_forever()
+        except (KeyboardInterrupt, SystemExit):
+            # При остановке корректно завершаем работу
+            loop.run_until_complete(app.stop())
+            loop.run_until_complete(app.shutdown())
+        
+        print("Бот остановлен.")
+        
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот остановлен пользователем или системой.")
     except Exception as e:
         print(f"Критическая ошибка при запуске бота: {e}")
+        # Выводим трассировку стека для отладки
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
-if __name__ == '__main__':
-    main() 
+def import_aiolibs():
+    """Проверка и импорт асинхронных библиотек"""
+    try:
+        import aiosqlite
+        import aiofiles
+        logger.info("Асинхронные библиотеки успешно импортированы")
+        return True
+    except ImportError:
+        logger.warning("Асинхронные библиотеки не найдены, будут использованы синхронные версии")
+        return False
+
+def set_user_lines_to_keep_sync(user_id, lines):
+    """Синхронная установка количества строк для пользователя"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute(
+            'INSERT OR REPLACE INTO user_settings (user_id, lines_to_keep) VALUES (?, ?)',
+            (user_id, lines)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+
+async def get_user_lines_to_keep(user_id):
+    """Асинхронное получение количества строк для пользователя"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as conn:
+            cursor = await conn.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+            result = await cursor.fetchone()
+            if not result:
+                cursor = await conn.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+                result = await cursor.fetchone()
+            return result[0] if result else 10
+    except Exception as e:
+        logger.error(f"Ошибка при получении количества строк для пользователя {user_id}: {e}")
+        # Fallback к синхронной версии
+        return get_user_lines_to_keep_sync(user_id)
+
+def get_user_lines_to_keep_sync(user_id):
+    """Получение количества строк для пользователя (синхронная версия)"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT lines_to_keep FROM user_settings WHERE user_id = ?', (user_id,))
+        result = c.fetchone()
+        if not result:
+            c.execute('SELECT lines_to_keep FROM bot_status WHERE id = 1')
+            result = c.fetchone()
+        return result[0] if result else 10
+    finally:
+        conn.close()
+        conn.close()
