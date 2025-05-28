@@ -1175,7 +1175,7 @@
             </div>
         </div>
 
-        <div class="card">
+        <div class="card mb-4">
             <div class="card-body">
                 <div class="files-list">
                     <h2>Файлы в хранилище</h2>
@@ -2482,5 +2482,15 @@
         // Подключаем PDF.js (лучше использовать конкретную версию)
     </script>
     <script src="{{ url_for('static', filename='js/preview.js') }}" defer></script>
+        <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 File Storage. Все права защищены.</p>
+            <p> Created by <a href="https://t.me/qwertyO5" target="_blank">SL1ZN1T3L</a> and <a href="https://t.me/Dovi_t" target="_blank">Dovi</a> </p>
+        </div>
+    </footer>
 </body>
 </html>
