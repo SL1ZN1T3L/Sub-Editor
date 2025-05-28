@@ -583,10 +583,7 @@
         
         .countdown-timer {
             padding: 10px 15px;
-            background-color: var(--card-bg);
-            border-radius: 8px;
-            margin: 10px 0;
-            box-shadow: 0 2px 4px var(--shadow-color);
+            padding-bottom: 0px !important;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -1080,6 +1077,10 @@
         .file-table td:nth-child(5) {
              padding-left: 10px;
         }
+
+        .mt-deletebutton {
+            margin-top: -2rem !important
+        }
     </style>
 </head>
 <body>
@@ -1093,26 +1094,25 @@
         <div class="page-title">
             <div class="rainbow-border"></div>
             <h1><i class="fas fa-cloud-upload-alt mr-2"></i> Временное хранилище</h1>
-        </div>
-        
-        <!-- Добавляем анимированный счетчик оставшегося времени -->
-        <div class="countdown-timer" id="countdownTimer">
-            <i class="far fa-clock"></i>
-            <div class="countdown-unit">
-                <span class="countdown-value" id="countDays">00</span>
-                <span class="countdown-label">дней</span>
-            </div>
-            <div class="countdown-unit">
-                <span class="countdown-value" id="countHours">00</span>
-                <span class="countdown-label">часов</span>
-            </div>
-            <div class="countdown-unit">
-                <span class="countdown-value" id="countMinutes">00</span>
-                <span class="countdown-label">минут</span>
-            </div>
-            <div class="countdown-unit">
-                <span class="countdown-value" id="countSeconds">00</span>
-                <span class="countdown-label">секунд</span>
+            <!-- Добавляем анимированный счетчик оставшегося времени -->
+            <div class="countdown-timer" id="countdownTimer">
+                <i class="far fa-clock"></i>
+                <div class="countdown-unit">
+                    <span class="countdown-value" id="countDays">00</span>
+                    <span class="countdown-label">дней</span>
+                </div>
+                <div class="countdown-unit">
+                    <span class="countdown-value" id="countHours">00</span>
+                    <span class="countdown-label">часов</span>
+                </div>
+                <div class="countdown-unit">
+                    <span class="countdown-value" id="countMinutes">00</span>
+                    <span class="countdown-label">минут</span>
+                </div>
+                <div class="countdown-unit">
+                    <span class="countdown-value" id="countSeconds">00</span>
+                    <span class="countdown-label">секунд</span>
+                </div>
             </div>
         </div>
         
@@ -1134,11 +1134,11 @@
                     <div class="storage-text">
                         Использовано: {{ '%.2f' % used_space }} MB из 500 MB
                     </div>
-                </div>
-                <div class="mt-3 d-flex justify-content-end">
-                    <button id="delete-storage" class="btn btn-danger">
-                        <i class="fas fa-trash"></i> Удалить хранилище
-                    </button>
+                    <div class="mt-deletebutton d-flex justify-content-end">
+                        <button id="delete-storage" class="btn btn-danger">
+                            <i class="fas fa-trash"></i> Удалить хранилище
+                        </button>
+                    </div>                    
                 </div>
             </div>
         </div>
@@ -1154,7 +1154,7 @@
                         <p class="text-muted small">Разрешенные типы файлов: {{ ', '.join(allowed_extensions)|e }}</p>
                         <form id="uploadForm" enctype="multipart/form-data">
                             <input type="file" class="file-input" id="fileInput" multiple>
-                            <button type="button" class="btn btn-primary mt-3" id="selectFilesBtn">Выбрать файлы</button>
+                            <button type="button" class="btn btn-primary mt-" id="selectFilesBtn">Выбрать файлы</button>
                         </form>
                     </div>
                 </div>
@@ -2488,7 +2488,7 @@
 
     <footer>
         <div class="container">
-            <p>&copy; 2025 File Storage. Все права защищены.</p>
+            <p>&copy; 2024-2025 ВРЕМЕННОЕ ХРАНИЛИЩЕ. Почти все права защищены.</p>
             <p> Created by <a href="https://t.me/qwertyO5" target="_blank">SL1ZN1T3L</a> and <a href="https://t.me/Dovi_t" target="_blank">Dovi</a> </p>
         </div>
     </footer>
