@@ -71,7 +71,7 @@
         
         .file-table td {
             padding: 10px 8px;
-            border-bottom: 1px solid var(--border-color);
+            /* border-bottom: 1px solid var(--border-color); */
         }
         
         .file-actions {
@@ -1093,9 +1093,35 @@
 <body>
     <!-- Добавляем контейнер для уведомлений -->
     <div class="toast-container"></div>
-    <button class="theme-switch" title="Переключить тему">
-        <i class="fas fa-moon"></i>
-    </button>
+        <button class="theme-switch" title="Переключить тему" onclick="switchTheme(this)">
+            <i class="fas fa-moon"></i>
+        </button>
+
+        <script>
+        function switchTheme(button) {
+            // Отключаем кнопку
+            button.disabled = true;
+            
+            // Получаем текущую тему (предположим, хранится в localStorage)
+            let currentTheme = localStorage.getItem('theme') || 'light';
+            let newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            // Применяем новую тему
+            document.body.className = newTheme; // Пример: меняем класс body
+            localStorage.setItem('theme', newTheme);
+            
+            // Обновляем иконку кнопки
+            button.querySelector('i').className = newTheme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
+            
+            // Включаем кнопку через 5 секунд
+            setTimeout(() => {
+                button.disabled = false;
+            }, 2000);
+            
+            // Если есть серверный запрос, можно добавить его здесь
+            // Например: fetch('/set-theme', { method: 'POST', body: JSON.stringify({ theme: newTheme }) });
+        }
+        </script>
     
     <div class="container mt-4">
         <div class="page-title">
