@@ -452,17 +452,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Выберите тип QR-кода:",
             reply_markup=get_qr_type_keyboard()
         )
-        return QR_TYPE            
-        except Exception as e:
-            logger.error(f"Ошибка при проверке хранилища: {str(e)}")
-            await update.message.reply_text(
-                "Произошла ошибка при проверке хранилища. Попробуйте позже.",
-                reply_markup=get_menu_keyboard(update.effective_user.id)
-            )
-            return MENU
-        finally:
-            if 'conn' in locals():
-                conn.close()
+        return QR_TYPE
     elif text == 'ℹ️ Помощь':
         await update.message.reply_text(
             "📚 *Помощь по использованию бота*\n\n"
@@ -1523,10 +1513,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Ошибка при настройке цикла событий: {e}")
             raise
-        
-        # Запускаем очистку истекших ссылок через планировщик
-        app.job_queue.run_repeating(cleanup_expired_links, interval=3600, first=10)
-        
+                
         # Запускаем очистку кэша защиты от спама
         app.job_queue.run_repeating(cleanup_spam_protection, interval=300, first=300)
         
